@@ -1,6 +1,8 @@
 node_modules/
 .next/
 out/
+.agents/
+graphify-out/
 .env*
 !.env.example
 .DS_Store
