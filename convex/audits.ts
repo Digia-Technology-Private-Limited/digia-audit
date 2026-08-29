@@ -306,7 +306,7 @@ export const saveAnalystResult = internalMutation({
         await ctx.db.insert("evidence", { appId: audit.appId, auditRunId: args.auditRunId, opportunityId, reviewId });
       }
     }
-    await ctx.db.patch(args.auditRunId, { currentStage: "ranking", updatedAt: now });
+    await ctx.db.patch(args.auditRunId, { status: "complete", completedAt: now, currentStage: "preparing", updatedAt: now });
   },
 });
 
@@ -362,6 +362,32 @@ export const listOpportunities = query({
       evidenceCount: (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length,
       intervention: (await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).order("desc").first()) ?? null,
     })));
+  },
+});
+
+export const getOpportunity = query({
+  args: { opportunityId: v.id("opportunities") },
+  handler: async (ctx, args) => {
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) return null;
+    const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
+    const reviews = await Promise.all(evidence.map((item) => ctx.db.get(item.reviewId)));
+    const changes = await ctx.db.query("opportunityChanges").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").collect();
+    const intervention = await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").first();
+    return { opportunity, reviews: reviews.filter((review): review is NonNullable<typeof review> => review !== null), changes, intervention: intervention ?? null };
+  },
+});
+
+export const recalculateOpportunity = mutation({
+  args: { opportunityId: v.id("opportunities"), impact: v.number(), frequency: v.number() },
+  handler: async (ctx, args) => {
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) throw new Error("Opportunity not found");
+    if (!Number.isInteger(args.impact) || args.impact < 1 || args.impact > 10 || !Number.isInteger(args.frequency) || args.frequency < 1 || args.frequency > 10) throw new Error("Impact and frequency must be whole numbers from 1 to 10.");
+    const now = Date.now();
+    if (args.impact !== opportunity.impact) await ctx.db.insert("opportunityChanges", { appId: opportunity.appId, auditRunId: opportunity.auditRunId, opportunityId: opportunity._id, field: "impact", changedBy: "Guest", previousValue: String(opportunity.impact), nextValue: String(args.impact), changedAt: now });
+    if (args.frequency !== opportunity.frequency) await ctx.db.insert("opportunityChanges", { appId: opportunity.appId, auditRunId: opportunity.auditRunId, opportunityId: opportunity._id, field: "frequency", changedBy: "Guest", previousValue: String(opportunity.frequency), nextValue: String(args.frequency), changedAt: now });
+    await ctx.db.patch(opportunity._id, { impact: args.impact, frequency: args.frequency, priorityScore: args.impact * opportunity.confidence * args.frequency * opportunity.trend, updatedAt: now });
   },
 });
 

@@ -130,6 +130,7 @@ export default defineSchema({
     auditRunId: v.id("auditRuns"),
     opportunityId: v.id("opportunities"),
     field: v.string(),
+    changedBy: v.string(),
     previousValue: v.string(),
     nextValue: v.string(),
     changedAt: v.number(),
