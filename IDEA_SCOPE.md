@@ -35,13 +35,9 @@ The first screen contains:
 - A short explanation of what the audit produces
 - A prominent **Run Audit** button
 
-The user can create an account with passwordless sign-in using:
+[CHANGED — V1 AUTH SCOPE]
 
-- Name
-- Email
-- Anonymous user ID
-
-The product does not require a password.
+V1 does not require product-user authentication. The PM can start an audit directly after entering a valid URL.
 
 ## 2. Enter and validate the app
 
@@ -64,15 +60,7 @@ If the URL is valid but is not a Google Play Store app URL, show a supported-sou
 
 No audit is created for any of these three input errors.
 
-## 3. Sign in before starting the audit
-
-If the user is not signed in, the product asks for their name and email and sends a passwordless sign-in link.
-
-The audit starts only after the user verifies the link.
-
-If the link is invalid, expired, or not received, show a clear error with **Resend link**. Do not start the audit until verification succeeds.
-
-## 4. Create and run the audit
+## 3. Create and run the audit
 
 After successful validation and sign-in, the product creates an audit and begins scraping.
 
@@ -83,7 +71,6 @@ The audit stores:
 - Source Play Store URL
 - App/package identifier
 - App identity and metadata needed to identify the app
-- Audit owner
 - Audit status
 - Scrape status
 - Scrape timestamp
@@ -389,7 +376,6 @@ If the opportunity is marked non-addressable or has fewer than two supporting re
 
 V1 persists only the information required to reproduce and inspect an audit:
 
-- Account identity: name, email, and anonymous user ID
 - App/package identifier
 - Source Play Store URL
 - App identity metadata needed to identify the app
@@ -410,7 +396,9 @@ V1 persists only the information required to reproduce and inspect an audit:
 - Generated recommendations
 - Full version history
 
-The final audit remains viewable through its direct audit link after the user closes and reopens the product.
+[CHANGED — V1 AUTH SCOPE]
+
+The final audit remains viewable through its direct audit link after the user closes and reopens the product. V1 does not require authentication to open that link.
 
 # WHAT V1 DOES NOT DO — everything parked
 
@@ -448,6 +436,7 @@ The following are explicitly excluded from this week’s build:
 - PDF exports
 - Team workspaces
 - Invitations and permissions
+- Product-user authentication and passwordless email links
 - Password-based authentication
 - Billing or payments
 - Mobile apps
