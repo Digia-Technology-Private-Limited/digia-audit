@@ -10,6 +10,7 @@
 
 import type * as analyst from "../analyst.js";
 import type * as audits from "../audits.js";
+import type * as planner from "../planner.js";
 import type * as researcher from "../researcher.js";
 import type * as scraper from "../scraper.js";
 
@@ -22,6 +23,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   analyst: typeof analyst;
   audits: typeof audits;
+  planner: typeof planner;
   researcher: typeof researcher;
   scraper: typeof scraper;
 }>;

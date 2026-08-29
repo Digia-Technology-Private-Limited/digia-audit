@@ -360,7 +360,68 @@ export const listOpportunities = query({
     return await Promise.all(opportunities.map(async (opportunity) => ({
       ...opportunity,
       evidenceCount: (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length,
+      intervention: (await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).order("desc").first()) ?? null,
     })));
+  },
+});
+
+export const generateFix = mutation({
+  args: { opportunityId: v.id("opportunities") },
+  handler: async (ctx, args) => {
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) throw new Error("Opportunity not found");
+    if (!opportunity.digiaAddressable) throw new Error("This problem is not marked Digia-addressable.");
+    const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
+    if (evidence.length < 2) throw new Error("At least two supporting reviews are required to generate a fix.");
+    const current = await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").first();
+    if (current?.generationStatus === "running") return current._id;
+    const interventionId = await ctx.db.insert("interventions", {
+      appId: opportunity.appId,
+      auditRunId: opportunity.auditRunId,
+      opportunityId: opportunity._id,
+      audience: "Pending generation",
+      trigger: "Pending generation",
+      experienceType: "Pending generation",
+      suggestedCopy: "Pending generation",
+      successMetric: "Pending generation",
+      generationStatus: "running",
+      generatedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(0, internal.planner.run, { interventionId, opportunityId: opportunity._id });
+    return interventionId;
+  },
+});
+
+export const getPlannerInput = internalQuery({
+  args: { opportunityId: v.id("opportunities") },
+  handler: async (ctx, args) => {
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) throw new Error("Opportunity not found");
+    const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
+    const reviews = await Promise.all(evidence.map((item) => ctx.db.get(item.reviewId)));
+    return { opportunity, reviews: reviews.filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })) };
+  },
+});
+
+export const saveIntervention = internalMutation({
+  args: {
+    interventionId: v.id("interventions"),
+    audience: v.string(),
+    trigger: v.string(),
+    experienceType: v.string(),
+    suggestedCopy: v.string(),
+    successMetric: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { interventionId, ...fields } = args;
+    await ctx.db.patch(interventionId, { ...fields, generationStatus: "complete", generatedAt: Date.now(), errorMessage: undefined });
+  },
+});
+
+export const failIntervention = internalMutation({
+  args: { interventionId: v.id("interventions"), message: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.interventionId, { generationStatus: "failed", errorMessage: args.message, generatedAt: Date.now() });
   },
 });
 

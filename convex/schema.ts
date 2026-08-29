@@ -122,6 +122,7 @@ export default defineSchema({
     suggestedCopy: v.string(),
     successMetric: v.string(),
     generationStatus: v.union(v.literal("running"), v.literal("complete"), v.literal("failed")),
+    errorMessage: v.optional(v.string()),
     generatedAt: v.number(),
   }).index("by_opportunity", ["opportunityId"]),
   opportunityChanges: defineTable({
