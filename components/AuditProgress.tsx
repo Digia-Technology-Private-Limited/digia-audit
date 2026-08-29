@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 
@@ -18,6 +18,8 @@ const stages = [
 
 export function AuditProgress({ auditId }: { auditId: string }) {
   const audit = useQuery(api.audits.get, { auditRunId: auditId as Id<"auditRuns"> });
+  const reviews = useQuery(api.audits.listReviews, { auditRunId: auditId as Id<"auditRuns"> });
+  const retryAudit = useMutation(api.audits.retry);
 
   if (audit === undefined) {
     return <main className="audit-shell"><p className="audit-loading">Loading audit…</p></main>;
@@ -25,6 +27,10 @@ export function AuditProgress({ auditId }: { auditId: string }) {
 
   if (audit === null) {
     return <main className="audit-shell"><div className="audit-message"><p className="eyebrow">Audit unavailable</p><h1>This audit could not be found.</h1><p>Check the audit link and try again.</p></div></main>;
+  }
+
+  if (audit.scrapeStatus === "failed") {
+    return <main className="audit-shell"><div className="audit-message"><p className="eyebrow">Could not collect reviews</p><h1>The Play Store reviews were not retrieved.</h1><p>{audit.scrapeError ?? "The source did not return usable review data."}</p><button className="retry-button" onClick={() => retryAudit({ auditRunId: audit._id })}>Retry audit</button></div></main>;
   }
 
   const currentIndex = stages.findIndex(([key]) => key === audit.currentStage);
@@ -47,7 +53,8 @@ export function AuditProgress({ auditId }: { auditId: string }) {
             return <li className={`stage stage-${state}`} key={key}><span className="stage-marker" />{label}<span className="stage-state">{state === "active" ? "now" : state}</span></li>;
           })}
         </ol>
-        <p className="audit-note">The audit record is created. Review collection and analysis will be added in the next milestones.</p>
+        {audit.scrapeStatus === "complete" || audit.scrapeStatus === "partial" ? <div className="review-summary"><strong>{audit.reviewCount} reviews collected</strong><span>{audit.usableReviewCount} usable · {audit.skippedReviewCount ?? 0} malformed · {audit.lowQualityReviewCount ?? 0} low quality</span>{audit.scrapeWarning ? <p>{audit.scrapeWarning}</p> : null}{audit.reviewCount === 0 ? <p>No reviews were found for this app. No recurring problems can be identified.</p> : audit.usableReviewCount === 0 ? <p>No usable reviews were found. No recurring problems can be identified.</p> : null}</div> : <p className="audit-note">The scraper is contacting Google Play. No review data is shown until it is actually retrieved.</p>}
+        {reviews && reviews.length > 0 ? <div className="review-list"><h2>Source reviews</h2>{reviews.map((review) => <article className="review-card" key={review._id}><div><span>{review.rating}/5</span><time>{review.reviewDate ?? "Date unavailable"}</time></div><p>{review.originalText}</p><small>{review.sourceReviewId}</small></article>)}</div> : null}
       </section>
     </main>
   );
