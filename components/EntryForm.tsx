@@ -1,13 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useMutation } from "convex/react";
+import { useRouter } from "next/navigation";
+import { api } from "../convex/_generated/api";
 import { getPlayStoreUrlError, validatePlayStoreUrl } from "../lib/validation";
 
 export function EntryForm() {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const createAudit = useMutation(api.audits.create);
+  const [isStarting, setIsStarting] = useState(false);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const result = validatePlayStoreUrl(url);
@@ -18,6 +24,15 @@ export function EntryForm() {
     }
 
     setError(null);
+    setIsStarting(true);
+
+    try {
+      const auditId = await createAudit({ sourceUrl: url.trim(), packageId: result.packageId });
+      router.push(`/audits/${auditId}`);
+    } catch {
+      setError("The audit could not be started. Please try again.");
+      setIsStarting(false);
+    }
   }
 
   return (
@@ -38,7 +53,9 @@ export function EntryForm() {
           aria-invalid={Boolean(error)}
           aria-describedby={error ? "play-store-url-error" : undefined}
         />
-        <button type="submit">Run audit <span aria-hidden="true">↗</span></button>
+        <button type="submit" disabled={isStarting}>
+          {isStarting ? "Starting…" : "Run audit"} <span aria-hidden="true">↗</span>
+        </button>
       </div>
       {error ? <p className="form-error" id="play-store-url-error" role="alert">{error}</p> : null}
     </form>

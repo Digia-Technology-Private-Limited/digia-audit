@@ -1,0 +1,54 @@
+"use client";
+
+import { useQuery } from "convex/react";
+import { api } from "../convex/_generated/api";
+import type { Id } from "../convex/_generated/dataModel";
+
+const stages = [
+  ["validating", "Validating Play Store app"],
+  ["collecting", "Collecting reviews"],
+  ["normalizing", "Normalizing and deduplicating reviews"],
+  ["filtering", "Filtering review quality"],
+  ["researching", "Finding recurring problems"],
+  ["consolidating", "Consolidating related problems"],
+  ["diagnosing", "Diagnosing problem types"],
+  ["ranking", "Ranking opportunities"],
+  ["preparing", "Preparing the audit"],
+] as const;
+
+export function AuditProgress({ auditId }: { auditId: string }) {
+  const audit = useQuery(api.audits.get, { auditRunId: auditId as Id<"auditRuns"> });
+
+  if (audit === undefined) {
+    return <main className="audit-shell"><p className="audit-loading">Loading audit…</p></main>;
+  }
+
+  if (audit === null) {
+    return <main className="audit-shell"><div className="audit-message"><p className="eyebrow">Audit unavailable</p><h1>This audit could not be found.</h1><p>Check the audit link and try again.</p></div></main>;
+  }
+
+  const currentIndex = stages.findIndex(([key]) => key === audit.currentStage);
+
+  return (
+    <main className="audit-shell">
+      <section className="audit-panel" aria-labelledby="audit-title">
+        <div className="eyebrow"><span className="eyebrow-mark" /> Digia Audit</div>
+        <div className="audit-heading">
+          <div>
+            <p className="audit-kicker">Audit in progress</p>
+            <h1 id="audit-title">Turning reviews into a decision.</h1>
+          </div>
+          <span className="audit-status">{audit.status}</span>
+        </div>
+        <p className="audit-source">{audit.sourceUrl}</p>
+        <ol className="stage-list" aria-label="Audit progress">
+          {stages.map(([key, label], index) => {
+            const state = index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
+            return <li className={`stage stage-${state}`} key={key}><span className="stage-marker" />{label}<span className="stage-state">{state === "active" ? "now" : state}</span></li>;
+          })}
+        </ol>
+        <p className="audit-note">The audit record is created. Review collection and analysis will be added in the next milestones.</p>
+      </section>
+    </main>
+  );
+}
