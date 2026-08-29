@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as analyst from "../analyst.js";
 import type * as audits from "../audits.js";
 import type * as researcher from "../researcher.js";
 import type * as scraper from "../scraper.js";
@@ -19,6 +20,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  analyst: typeof analyst;
   audits: typeof audits;
   researcher: typeof researcher;
   scraper: typeof scraper;

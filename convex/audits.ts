@@ -225,6 +225,88 @@ export const saveResearchResult = internalMutation({
       });
     }
     await ctx.db.patch(args.auditRunId, { analysisStatus: "complete", analysisError: undefined, currentStage: "consolidating", updatedAt: Date.now() });
+    await ctx.scheduler.runAfter(0, internal.analyst.run, { auditRunId: args.auditRunId, appId: audit.appId });
+  },
+});
+
+export const getAnalystInput = internalQuery({
+  args: { auditRunId: v.id("auditRuns") },
+  handler: async (ctx, args) => {
+    const candidates = await ctx.db.query("problemCandidates").withIndex("by_audit", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    return await Promise.all(candidates.map(async (candidate) => ({
+      candidateId: candidate._id,
+      problemStatement: candidate.problemStatement,
+      evidence: (await Promise.all(candidate.evidenceReviewIds.map((reviewId) => ctx.db.get(reviewId)))).filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })),
+      category: candidate.category,
+      supportingSignalCount: candidate.supportingSignalCount,
+      researcherConfidence: candidate.confidence,
+    })));
+  },
+});
+
+export const updateAnalysisStage = internalMutation({
+  args: { auditRunId: v.id("auditRuns"), stage: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, { currentStage: args.stage, updatedAt: Date.now() });
+  },
+});
+
+export const saveAnalystResult = internalMutation({
+  args: {
+    auditRunId: v.id("auditRuns"),
+    opportunities: v.array(v.object({
+      problemStatement: v.string(),
+      evidenceReviewIds: v.array(v.string()),
+      frequency: v.number(),
+      severity: v.number(),
+      confidence: v.number(),
+      trend: v.number(),
+      impact: v.number(),
+      diagnosis: v.string(),
+      issueType: v.string(),
+      digiaAddressable: v.boolean(),
+      recommendedOwner: v.string(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    const audit = await ctx.db.get(args.auditRunId);
+    if (!audit) throw new Error("Audit not found");
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const observedIds = new Set(observations.map((observation) => observation.reviewId));
+    const now = Date.now();
+    for (const opportunity of args.opportunities) {
+      const evidenceReviewIds = [...new Set(opportunity.evidenceReviewIds)]
+        .filter((reviewId) => observedIds.has(reviewId as Id<"reviews">))
+        .map((reviewId) => reviewId as Id<"reviews">);
+      if (!opportunity.problemStatement.trim() || evidenceReviewIds.length === 0) continue;
+      const frequency = Math.max(1, Math.min(10, Math.round(opportunity.frequency)));
+      const severity = Math.max(1, Math.min(10, Math.round(opportunity.severity)));
+      const confidence = Math.max(1, Math.min(10, Math.round(opportunity.confidence)));
+      const trend = Math.max(1, Math.min(10, Math.round(opportunity.trend)));
+      const impact = Math.max(1, Math.min(10, Math.round(opportunity.impact)));
+      const opportunityId = await ctx.db.insert("opportunities", {
+        appId: audit.appId,
+        auditRunId: args.auditRunId,
+        problemStatement: opportunity.problemStatement.trim(),
+        frequency,
+        severity,
+        confidence,
+        trend,
+        impact,
+        priorityScore: impact * confidence * frequency * trend,
+        diagnosis: opportunity.diagnosis.trim() || "Other",
+        issueType: opportunity.issueType.trim() || "Other",
+        digiaAddressable: opportunity.digiaAddressable,
+        recommendedOwner: opportunity.recommendedOwner.trim() || "Product",
+        lowConfidence: evidenceReviewIds.length < 2 || confidence < 5,
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (const reviewId of evidenceReviewIds) {
+        await ctx.db.insert("evidence", { appId: audit.appId, auditRunId: args.auditRunId, opportunityId, reviewId });
+      }
+    }
+    await ctx.db.patch(args.auditRunId, { currentStage: "ranking", updatedAt: now });
   },
 });
 
@@ -268,6 +350,17 @@ export const listCandidates = query({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     return await ctx.db.query("problemCandidates").withIndex("by_audit", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+  },
+});
+
+export const listOpportunities = query({
+  args: { auditRunId: v.id("auditRuns") },
+  handler: async (ctx, args) => {
+    const opportunities = await ctx.db.query("opportunities").withIndex("by_audit_score", (q) => q.eq("auditRunId", args.auditRunId)).order("desc").collect();
+    return await Promise.all(opportunities.map(async (opportunity) => ({
+      ...opportunity,
+      evidenceCount: (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length,
+    })));
   },
 });
 
