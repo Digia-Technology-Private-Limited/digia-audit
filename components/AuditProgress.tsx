@@ -49,7 +49,7 @@ export function AuditProgress({ auditId }: { auditId: string }) {
         <div className="eyebrow"><span className="eyebrow-mark" /> Digia Audit</div>
         <div className="audit-heading">
           <div>
-            <p className="audit-kicker">Audit in progress</p>
+            <p className="audit-kicker">{audit.status === "complete" ? "Audit ready" : "Audit in progress"}</p>
             <h1 id="audit-title">Turning reviews into a decision.</h1>
           </div>
           <span className="audit-status">{audit.status}</span>
@@ -57,7 +57,7 @@ export function AuditProgress({ auditId }: { auditId: string }) {
         <p className="audit-source">{audit.sourceUrl}</p>
         <ol className="stage-list" aria-label="Audit progress">
           {stages.map(([key, label], index) => {
-            const state = index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
+            const state = audit.status === "complete" || index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
             return <li className={`stage stage-${state}`} key={key}><span className="stage-marker" />{label}<span className="stage-state">{state === "active" ? "now" : state}</span></li>;
           })}
         </ol>
