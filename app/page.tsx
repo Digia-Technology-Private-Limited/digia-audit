@@ -1,0 +1,43 @@
+import { EntryForm } from "../components/EntryForm";
+
+export default function Home() {
+  return (
+    <main className="entry-shell">
+      <div className="entry-grid" aria-hidden="true" />
+      <section className="entry-card" aria-labelledby="page-title">
+        <div className="eyebrow">
+          <span className="eyebrow-mark" />
+          Product feedback, made useful
+        </div>
+
+        <div className="entry-copy">
+          <h1 id="page-title">
+            Find the problem
+            <br />
+            worth fixing next.
+          </h1>
+          <p>
+            Digia Audit reads real Google Play reviews and turns scattered
+            complaints into one evidence-backed product decision.
+          </p>
+        </div>
+
+        <EntryForm />
+
+        <div className="entry-footnote">
+          <span className="footnote-dot" />
+          Real reviews in. Grounded opportunities out.
+        </div>
+      </section>
+
+      <aside className="signal-card" aria-label="Audit principle">
+        <div className="signal-label">The audit principle</div>
+        <p>
+          Every finding must point back to what a real user said.
+        </p>
+        <div className="signal-rule" />
+        <span>01 / evidence before opinion</span>
+      </aside>
+    </main>
+  );
+}
