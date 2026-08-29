@@ -7,3 +7,4 @@ graphify-out/
 !.env.example
 .DS_Store
 npm-debug.log*
+.vercel
