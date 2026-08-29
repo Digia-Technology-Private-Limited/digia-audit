@@ -1,5 +1,6 @@
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
 export const create = mutation({
@@ -179,6 +180,58 @@ export const saveScrapeResult = internalMutation({
       scrapeWarning: args.warning,
       updatedAt: now,
     });
+    if (usableReviewCount > 0) {
+      await ctx.scheduler.runAfter(0, internal.researcher.run, { auditRunId: args.auditRunId, appId: args.appId });
+    }
+  },
+});
+
+export const updateResearchStarted = internalMutation({
+  args: { auditRunId: v.id("auditRuns") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, { analysisStatus: "running", currentStage: "researching", updatedAt: Date.now() });
+  },
+});
+
+export const saveResearchResult = internalMutation({
+  args: {
+    auditRunId: v.id("auditRuns"),
+    candidates: v.array(v.object({
+      problemStatement: v.string(),
+      evidenceReviewIds: v.array(v.string()),
+      category: v.string(),
+      confidence: v.number(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    const audit = await ctx.db.get(args.auditRunId);
+    if (!audit) throw new Error("Audit not found");
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const observedIds = new Set(observations.map((observation) => observation.reviewId));
+    for (const candidate of args.candidates) {
+      const evidenceReviewIds = [...new Set(candidate.evidenceReviewIds)]
+        .filter((reviewId) => observedIds.has(reviewId as Id<"reviews">))
+        .map((reviewId) => reviewId as Id<"reviews">);
+      if (!candidate.problemStatement.trim() || evidenceReviewIds.length === 0) continue;
+      await ctx.db.insert("problemCandidates", {
+        appId: audit.appId,
+        auditRunId: args.auditRunId,
+        problemStatement: candidate.problemStatement.trim(),
+        evidenceReviewIds,
+        category: candidate.category.trim() || "Other",
+        supportingSignalCount: evidenceReviewIds.length,
+        confidence: Math.max(0, Math.min(1, candidate.confidence)),
+        status: "accepted",
+      });
+    }
+    await ctx.db.patch(args.auditRunId, { analysisStatus: "complete", analysisError: undefined, currentStage: "consolidating", updatedAt: Date.now() });
+  },
+});
+
+export const saveAnalysisFailure = internalMutation({
+  args: { auditRunId: v.id("auditRuns"), message: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, { analysisStatus: "failed", status: "failed", analysisError: args.message, updatedAt: Date.now() });
   },
 });
 
@@ -208,5 +261,21 @@ export const listReviews = query({
     const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
     const reviews = await Promise.all(observations.map((observation) => ctx.db.get(observation.reviewId)));
     return reviews.filter((review): review is NonNullable<typeof review> => review !== null);
+  },
+});
+
+export const listCandidates = query({
+  args: { auditRunId: v.id("auditRuns") },
+  handler: async (ctx, args) => {
+    return await ctx.db.query("problemCandidates").withIndex("by_audit", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+  },
+});
+
+export const getUsableReviews = internalQuery({
+  args: { auditRunId: v.id("auditRuns") },
+  handler: async (ctx, args) => {
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const reviews = await Promise.all(observations.map((observation) => ctx.db.get(observation.reviewId)));
+    return reviews.filter((review): review is NonNullable<typeof review> => review !== null && review.qualityStatus === "usable").map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null }));
   },
 });

@@ -9,6 +9,7 @@
  */
 
 import type * as audits from "../audits.js";
+import type * as researcher from "../researcher.js";
 import type * as scraper from "../scraper.js";
 
 import type {
@@ -19,6 +20,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   audits: typeof audits;
+  researcher: typeof researcher;
   scraper: typeof scraper;
 }>;
 

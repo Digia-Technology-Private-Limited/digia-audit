@@ -19,6 +19,7 @@ const stages = [
 export function AuditProgress({ auditId }: { auditId: string }) {
   const audit = useQuery(api.audits.get, { auditRunId: auditId as Id<"auditRuns"> });
   const reviews = useQuery(api.audits.listReviews, { auditRunId: auditId as Id<"auditRuns"> });
+  const candidates = useQuery(api.audits.listCandidates, { auditRunId: auditId as Id<"auditRuns"> });
   const retryAudit = useMutation(api.audits.retry);
 
   if (audit === undefined) {
@@ -55,6 +56,7 @@ export function AuditProgress({ auditId }: { auditId: string }) {
         </ol>
         {audit.scrapeStatus === "complete" || audit.scrapeStatus === "partial" ? <div className="review-summary"><strong>{audit.reviewCount} reviews collected</strong><span>{audit.usableReviewCount} usable · {audit.skippedReviewCount ?? 0} malformed · {audit.lowQualityReviewCount ?? 0} low quality</span>{audit.scrapeWarning ? <p>{audit.scrapeWarning}</p> : null}{audit.reviewCount === 0 ? <p>No reviews were found for this app. No recurring problems can be identified.</p> : audit.usableReviewCount === 0 ? <p>No usable reviews were found. No recurring problems can be identified.</p> : null}</div> : <p className="audit-note">The scraper is contacting Google Play. No review data is shown until it is actually retrieved.</p>}
         {reviews && reviews.length > 0 ? <div className="review-list"><h2>Source reviews</h2>{reviews.map((review) => <article className="review-card" key={review._id}><div><span>{review.rating}/5</span><time>{review.reviewDate ?? "Date unavailable"}</time></div><p>{review.originalText}</p><small>{review.sourceReviewId}</small></article>)}</div> : null}
+        {candidates && candidates.length > 0 ? <div className="candidate-list"><h2>Grounded problem candidates</h2>{candidates.map((candidate) => <article className="candidate-card" key={candidate._id}><div><strong>{candidate.problemStatement}</strong><span>{Math.round(candidate.confidence * 100)}% confidence</span></div><p>{candidate.category} · {candidate.supportingSignalCount} supporting review{candidate.supportingSignalCount === 1 ? "" : "s"}</p></article>)}</div> : candidates && audit.analysisStatus === "complete" ? <p className="audit-note">No recurring problems found in the usable reviews.</p> : null}
       </section>
     </main>
   );
