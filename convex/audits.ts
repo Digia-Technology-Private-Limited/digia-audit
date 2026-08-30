@@ -4,6 +4,21 @@ import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
 const MIN_ACTIONABLE_EVIDENCE = 10;
+const ANALYSIS_WINDOW_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getAnalysisWindow(now: number) {
+  return {
+    analysisWindowStart: now - ANALYSIS_WINDOW_DAYS * DAY_MS,
+    analysisWindowEnd: now,
+  };
+}
+
+function isReviewInAnalysisWindow(reviewDate: string | undefined, audit: { analysisWindowStart?: number; analysisWindowEnd?: number }) {
+  if (audit.analysisWindowStart === undefined || audit.analysisWindowEnd === undefined) return true;
+  const timestamp = reviewDate ? Date.parse(reviewDate) : Number.NaN;
+  return Number.isFinite(timestamp) && timestamp >= audit.analysisWindowStart && timestamp <= audit.analysisWindowEnd;
+}
 
 export const create = mutation({
   args: {
@@ -12,6 +27,7 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const now = Date.now();
+    const { analysisWindowStart, analysisWindowEnd } = getAnalysisWindow(now);
     const existingApp = await ctx.db
       .query("apps")
       .withIndex("by_platform_package", (q) => q.eq("platform", "android").eq("packageName", args.packageId))
@@ -45,6 +61,14 @@ export const create = mutation({
       status: "running",
       scrapeStatus: "pending",
       analysisStatus: "pending",
+      analysisWindowStart,
+      analysisWindowEnd,
+      analysisWindowType: "fixed_days",
+      analysisWindowDays: ANALYSIS_WINDOW_DAYS,
+      reviewsFetched: 0,
+      reviewsInWindow: 0,
+      reviewsAnalyzed: 0,
+      windowCoverageStatus: "partial",
       reviewCount: 0,
       usableReviewCount: 0,
       skippedReviewCount: 0,
@@ -86,10 +110,24 @@ export const retry = mutation({
   handler: async (ctx, args) => {
     const audit = await ctx.db.get(args.auditRunId);
     if (!audit) throw new Error("Audit not found");
+    const now = Date.now();
+    const { analysisWindowStart, analysisWindowEnd } = getAnalysisWindow(now);
     await ctx.db.patch(args.auditRunId, {
       status: "running",
       scrapeStatus: "pending",
       analysisStatus: "pending",
+      startedAt: now,
+      analysisWindowStart,
+      analysisWindowEnd,
+      analysisWindowType: "fixed_days",
+      analysisWindowDays: ANALYSIS_WINDOW_DAYS,
+      reviewsFetched: 0,
+      reviewsInWindow: 0,
+      reviewsAnalyzed: 0,
+      oldestReviewFetchedAt: undefined,
+      newestReviewFetchedAt: undefined,
+      windowCoverageStatus: "partial",
+      collectionStopReason: undefined,
       reviewCount: 0,
       usableReviewCount: 0,
       skippedReviewCount: 0,
@@ -120,6 +158,20 @@ export const saveScrapeResult = internalMutation({
     })),
     skippedReviewCount: v.number(),
     lowQualityReviewCount: v.number(),
+    reviewsFetched: v.number(),
+    reviewsInWindow: v.number(),
+    reviewsAnalyzed: v.number(),
+    oldestReviewFetchedAt: v.optional(v.string()),
+    newestReviewFetchedAt: v.optional(v.string()),
+    windowCoverageStatus: v.union(v.literal("complete"), v.literal("partial")),
+    collectionStopReason: v.union(
+      v.literal("window_reached"),
+      v.literal("source_exhausted"),
+      v.literal("max_reviews_reached"),
+      v.literal("pagination_failure"),
+      v.literal("timeout"),
+      v.literal("source_limit"),
+    ),
     scrapeStatus: v.union(v.literal("partial"), v.literal("complete")),
     warning: v.optional(v.string()),
   },
@@ -179,12 +231,17 @@ export const saveScrapeResult = internalMutation({
       usableReviewCount,
       skippedReviewCount: args.skippedReviewCount,
       lowQualityReviewCount: args.lowQualityReviewCount,
+      reviewsFetched: args.reviewsFetched,
+      reviewsInWindow: args.reviewsInWindow,
+      reviewsAnalyzed: args.reviewsAnalyzed,
+      oldestReviewFetchedAt: args.oldestReviewFetchedAt,
+      newestReviewFetchedAt: args.newestReviewFetchedAt,
+      windowCoverageStatus: args.windowCoverageStatus,
+      collectionStopReason: args.collectionStopReason,
       scrapeWarning: args.warning,
       updatedAt: now,
     });
-    if (usableReviewCount > 0) {
-      await ctx.scheduler.runAfter(0, internal.researcher.run, { auditRunId: args.auditRunId, appId: args.appId });
-    }
+    await ctx.scheduler.runAfter(0, internal.researcher.run, { auditRunId: args.auditRunId, appId: args.appId });
   },
 });
 
@@ -320,13 +377,23 @@ export const saveAnalysisFailure = internalMutation({
 });
 
 export const saveScrapeFailure = internalMutation({
-  args: { auditRunId: v.id("auditRuns"), message: v.string() },
+  args: {
+    auditRunId: v.id("auditRuns"),
+    message: v.string(),
+    collectionStopReason: v.optional(v.union(
+      v.literal("pagination_failure"),
+      v.literal("timeout"),
+      v.literal("source_limit"),
+    )),
+  },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.auditRunId, {
       status: "failed",
       scrapeStatus: "failed",
       currentStage: "collecting",
       scrapeError: args.message,
+      windowCoverageStatus: "partial",
+      collectionStopReason: args.collectionStopReason ?? "pagination_failure",
       updatedAt: Date.now(),
     });
   },
@@ -462,7 +529,10 @@ export const getUsableReviews = internalQuery({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const audit = await ctx.db.get(args.auditRunId);
     const reviews = await Promise.all(observations.map((observation) => ctx.db.get(observation.reviewId)));
-    return reviews.filter((review): review is NonNullable<typeof review> => review !== null && review.qualityStatus === "usable").map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null }));
+    return reviews
+      .filter((review): review is NonNullable<typeof review> => review !== null && review.qualityStatus === "usable" && isReviewInAnalysisWindow(review.reviewDate, audit ?? {}))
+      .map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null }));
   },
 });

@@ -2,10 +2,13 @@
 
 import gplay from "google-play-scraper";
 import { internalAction } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
-const MAX_REVIEWS = 500;
+export const MAX_REVIEWS_PER_AUDIT = 10_000;
+const ANALYSIS_WINDOW_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const SCRAPE_TIMEOUT_MS = 20_000;
 
 type RawReview = {
@@ -14,6 +17,11 @@ type RawReview = {
   score?: unknown;
   date?: unknown;
   version?: unknown;
+};
+
+type ReviewsResponse = {
+  data?: RawReview[];
+  nextPaginationToken?: string | null;
 };
 
 function derivedReviewId(review: RawReview, packageId: string) {
@@ -40,63 +48,162 @@ function errorMessage(error: unknown) {
   return "Could not collect reviews from Google Play Store.";
 }
 
+function isTimeout(error: unknown) {
+  return /timed out/i.test(error instanceof Error ? error.message : String(error));
+}
+
 export const run = internalAction({
   args: { auditRunId: v.id("auditRuns"), packageId: v.string() },
   handler: async (ctx, args) => {
     await ctx.runMutation(internal.audits.updateScrapeStarted, { auditRunId: args.auditRunId });
 
+    let appName: string | undefined;
+    let developer: string | undefined;
+    let audit: { appId: Id<"apps">; analysisWindowStart?: number; analysisWindowEnd?: number } | null = null;
+    const normalized: Array<{
+      sourceReviewId: string;
+      sourceReviewIdKind: "native" | "derived";
+      originalText: string;
+      rating: number;
+      reviewDate: string;
+      version?: string;
+      qualityStatus: "usable" | "lowQuality";
+    }> = [];
+    const seen = new Set<string>();
+    let reviewsFetched = 0;
+    let skippedReviewCount = 0;
+    let lowQualityReviewCount = 0;
+    let oldestReviewFetchedAt: string | undefined;
+    let newestReviewFetchedAt: string | undefined;
+
     try {
+      audit = await ctx.runQuery(api.audits.get, { auditRunId: args.auditRunId });
+      if (!audit) throw new Error("Audit not found");
+      const analysisWindowEnd = audit.analysisWindowEnd ?? Date.now();
+      const analysisWindowStart = audit.analysisWindowStart ?? analysisWindowEnd - ANALYSIS_WINDOW_DAYS * DAY_MS;
       const app = await withTimeout(gplay.app({ appId: args.packageId, lang: "en", country: "us" }));
-      const result = await withTimeout(gplay.reviews({ appId: args.packageId, lang: "en", country: "us", sort: 2, num: MAX_REVIEWS }));
-      const rawReviews = Array.isArray(result) ? result : result.data;
-      const seen = new Set<string>();
-      const normalized = [];
-      let skippedReviewCount = 0;
-      let lowQualityReviewCount = 0;
+      appName = app.title;
+      developer = app.developer;
+      let nextPaginationToken: string | null = null;
+      let stopReason: "window_reached" | "source_exhausted" | "max_reviews_reached" = "source_exhausted";
 
-      for (const raw of rawReviews as RawReview[]) {
-        const text = typeof raw.text === "string" ? raw.text.trim() : "";
-        const rating = typeof raw.score === "number" ? raw.score : Number(raw.score);
-        const reviewId = typeof raw.id === "string" && raw.id.trim() ? raw.id : derivedReviewId(raw, args.packageId);
-        if (!text || !Number.isInteger(rating) || rating < 1 || rating > 5 || !raw.date) {
-          skippedReviewCount += 1;
-          continue;
+      while (true) {
+        const result: ReviewsResponse | RawReview[] = await withTimeout(gplay.reviews({
+          appId: args.packageId,
+          lang: "en",
+          country: "us",
+          sort: 2,
+          paginate: true,
+          ...(nextPaginationToken ? { nextPaginationToken } : {}),
+        })) as ReviewsResponse | RawReview[];
+        const rawReviews = (Array.isArray(result) ? result : result.data) as RawReview[] | undefined;
+        const nextToken = Array.isArray(result) ? null : result.nextPaginationToken ?? null;
+        if (!rawReviews || rawReviews.length === 0) {
+          stopReason = "source_exhausted";
+          break;
         }
-        if (seen.has(reviewId)) continue;
-        seen.add(reviewId);
-        const qualityStatus = text.length < 5 ? "lowQuality" : "usable";
-        if (qualityStatus === "lowQuality") lowQualityReviewCount += 1;
-        normalized.push({
-          sourceReviewId: reviewId,
-          sourceReviewIdKind: typeof raw.id === "string" && raw.id.trim() ? "native" as const : "derived" as const,
-          originalText: text,
-          rating,
-          reviewDate: String(raw.date),
-          version: typeof raw.version === "string" && raw.version ? raw.version : undefined,
-          qualityStatus: qualityStatus as "usable" | "lowQuality",
-        });
-      }
 
-      if (rawReviews.length > 0 && normalized.length === 0) {
-        throw new Error("Google Play returned no valid review records.");
+        let reachedWindowBoundary = false;
+        for (const raw of rawReviews) {
+          const text = typeof raw.text === "string" ? raw.text.trim() : "";
+          const rating = typeof raw.score === "number" ? raw.score : Number(raw.score);
+          const reviewTimestamp = raw.date ? Date.parse(String(raw.date)) : Number.NaN;
+          if (!text || !Number.isInteger(rating) || rating < 1 || rating > 5 || !Number.isFinite(reviewTimestamp)) {
+            skippedReviewCount += 1;
+            continue;
+          }
+          const reviewDate = new Date(reviewTimestamp).toISOString();
+          const reviewId = typeof raw.id === "string" && raw.id.trim() ? raw.id : derivedReviewId(raw, args.packageId);
+          if (seen.has(reviewId)) continue;
+          seen.add(reviewId);
+          reviewsFetched += 1;
+          oldestReviewFetchedAt = oldestReviewFetchedAt && Date.parse(oldestReviewFetchedAt) <= reviewTimestamp ? oldestReviewFetchedAt : reviewDate;
+          newestReviewFetchedAt = newestReviewFetchedAt && Date.parse(newestReviewFetchedAt) >= reviewTimestamp ? newestReviewFetchedAt : reviewDate;
+
+          if (reviewTimestamp < analysisWindowStart) {
+            reachedWindowBoundary = true;
+            break;
+          }
+          if (reviewTimestamp > analysisWindowEnd) continue;
+          if (normalized.length >= MAX_REVIEWS_PER_AUDIT) {
+            stopReason = "max_reviews_reached";
+            break;
+          }
+          const qualityStatus = text.length < 5 ? "lowQuality" : "usable";
+          if (qualityStatus === "lowQuality") lowQualityReviewCount += 1;
+          normalized.push({
+            sourceReviewId: reviewId,
+            sourceReviewIdKind: typeof raw.id === "string" && raw.id.trim() ? "native" : "derived",
+            originalText: text,
+            rating,
+            reviewDate,
+            version: typeof raw.version === "string" && raw.version ? raw.version : undefined,
+            qualityStatus,
+          });
+        }
+
+        if (stopReason === "max_reviews_reached") break;
+        if (reachedWindowBoundary) {
+          stopReason = "window_reached";
+          break;
+        }
+        if (!nextToken || nextToken === nextPaginationToken) {
+          stopReason = "source_exhausted";
+          break;
+        }
+        nextPaginationToken = nextToken;
       }
 
       const warnings = [];
       if (skippedReviewCount > 0) warnings.push(`${skippedReviewCount} malformed review record(s) were skipped.`);
       if (normalized.length < 10) warnings.push("Fewer than 10 reviews were available. This audit is low confidence.");
+      if (stopReason === "max_reviews_reached") warnings.push(`The ${MAX_REVIEWS_PER_AUDIT.toLocaleString()} review collection limit was reached before the full 30-day window was covered.`);
       await ctx.runMutation(internal.audits.saveScrapeResult, {
         auditRunId: args.auditRunId,
-        appId: (await ctx.runQuery(internal.audits.getAppForAudit, { auditRunId: args.auditRunId }))!.appId,
-        appName: app.title,
-        developer: app.developer,
+        appId: audit.appId,
+        appName,
+        developer,
         reviews: normalized,
         skippedReviewCount,
         lowQualityReviewCount,
-        scrapeStatus: skippedReviewCount > 0 ? "partial" : "complete",
+        reviewsFetched,
+        reviewsInWindow: normalized.length,
+        reviewsAnalyzed: normalized.filter((review) => review.qualityStatus === "usable").length,
+        oldestReviewFetchedAt,
+        newestReviewFetchedAt,
+        windowCoverageStatus: stopReason === "window_reached" || stopReason === "source_exhausted" ? "complete" : "partial",
+        collectionStopReason: stopReason,
+        scrapeStatus: stopReason === "window_reached" || stopReason === "source_exhausted" ? "complete" : "partial",
         warning: warnings.length > 0 ? warnings.join(" ") : undefined,
       });
     } catch (error) {
-      await ctx.runMutation(internal.audits.saveScrapeFailure, { auditRunId: args.auditRunId, message: errorMessage(error) });
+      if (audit && reviewsFetched > 0) {
+        const timeout = isTimeout(error);
+        await ctx.runMutation(internal.audits.saveScrapeResult, {
+          auditRunId: args.auditRunId,
+          appId: audit.appId,
+          appName,
+          developer,
+          reviews: normalized,
+          skippedReviewCount,
+          lowQualityReviewCount,
+          reviewsFetched,
+          reviewsInWindow: normalized.length,
+          reviewsAnalyzed: normalized.filter((review) => review.qualityStatus === "usable").length,
+          oldestReviewFetchedAt,
+          newestReviewFetchedAt,
+          windowCoverageStatus: "partial",
+          collectionStopReason: timeout ? "timeout" : "pagination_failure",
+          scrapeStatus: "partial",
+          warning: `${errorMessage(error)} Collection stopped before the full 30-day window was covered.`,
+        });
+      } else {
+        await ctx.runMutation(internal.audits.saveScrapeFailure, {
+          auditRunId: args.auditRunId,
+          message: errorMessage(error),
+          collectionStopReason: isTimeout(error) ? "timeout" : "pagination_failure",
+        });
+      }
     }
   },
 });
