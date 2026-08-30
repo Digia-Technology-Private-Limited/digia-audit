@@ -23,6 +23,7 @@ export default function Home() {
         </div>
 
         <EntryForm />
+        <p className="privacy-note">No sign-in yet. Anyone with an audit link can view it.</p>
 
         <div className="entry-footnote">
           <span className="footnote-dot" />

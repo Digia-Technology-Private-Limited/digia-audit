@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { api } from "../convex/_generated/api";
@@ -24,6 +25,16 @@ export function AuditProgress({ auditId }: { auditId: string }) {
   const opportunities = useQuery(api.audits.listOpportunities, { auditRunId: auditId as Id<"auditRuns"> });
   const generateFix = useMutation(api.audits.generateFix);
   const retryAudit = useMutation(api.audits.retry);
+  const [generatingOpportunityId, setGeneratingOpportunityId] = useState<Id<"opportunities"> | null>(null);
+
+  const handleGenerateFix = async (opportunityId: Id<"opportunities">) => {
+    setGeneratingOpportunityId(opportunityId);
+    try {
+      await generateFix({ opportunityId });
+    } catch {
+      setGeneratingOpportunityId(null);
+    }
+  };
 
   if (audit === undefined) {
     return <main className="audit-shell"><p className="audit-loading">Loading audit…</p></main>;
@@ -58,7 +69,7 @@ export function AuditProgress({ auditId }: { auditId: string }) {
           </div>
           <span className="audit-status">{audit.status}</span>
         </div>
-        <p className="audit-source">{audit.sourceUrl}</p>
+        <p className="audit-source">{audit.sourceUrl}</p>{audit.status === "complete" ? <Link className="new-audit-link" href="/">Run another audit</Link> : null}
         <ol className="stage-list" aria-label="Audit progress">
           {stages.map(([key, label], index) => {
             const state = audit.status === "complete" || index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
@@ -70,8 +81,8 @@ export function AuditProgress({ auditId }: { auditId: string }) {
         {topOpportunity ? <div className="top-outcome"><p className="audit-kicker">#1 problem to act on next</p><h2>{topOpportunity.problemStatement}</h2><p>{topOpportunity.issueType} · {topOpportunity.digiaAddressable ? "Digia addressable" : `Owner: ${topOpportunity.recommendedOwner}`} · {topOpportunity.evidenceCount} supporting reviews · {topOpportunity.coveragePercent}% of usable reviews</p><Link className="outcome-link" href={`/audits/${auditId}/opportunities/${topOpportunity._id}`}>Inspect evidence and recommendation →</Link></div> : audit.analysisStatus === "complete" ? <div className="top-outcome top-outcome-empty"><p className="audit-kicker">No actionable theme found</p><h2>No theme met the 10-review evidence bar.</h2><p>Smaller signals are shown below as unconfirmed and are not ranked as decisions.</p></div> : null}
         {confirmedCandidates.length > 0 ? <div className="candidate-list"><h2>Grounded problem candidates</h2>{confirmedCandidates.map((candidate) => <article className="candidate-card" key={candidate._id}><div><strong>{candidate.problemStatement}</strong><span>{Math.round(candidate.confidence * 100)}% confidence</span></div><p>{candidate.category} · {candidate.supportingSignalCount} supporting reviews</p></article>)}</div> : null}
         {unconfirmedCandidates.length > 0 ? <div className="candidate-list candidate-unconfirmed"><h2>Unconfirmed signals — not ranked</h2>{unconfirmedCandidates.map((candidate) => <article className="candidate-card" key={candidate._id}><div><strong>{candidate.problemStatement}</strong><span>{Math.round(candidate.confidence * 100)}% confidence</span></div><p>{candidate.category} · {candidate.supportingSignalCount} supporting review{candidate.supportingSignalCount === 1 ? "" : "s"} · needs 10 to become actionable</p></article>)}</div> : null}
-        {opportunities && opportunities.length > 0 ? <div className="opportunity-list"><h2>Ranked opportunities</h2>{opportunities.map((opportunity, index) => <article className="opportunity-card" key={opportunity._id}><div className="opportunity-rank">#{index + 1}</div><div className="opportunity-main"><Link className="opportunity-link" href={`/audits/${auditId}/opportunities/${opportunity._id}`}><strong>{opportunity.problemStatement}</strong></Link><p>{opportunity.issueType} · {opportunity.digiaAddressable ? "Digia addressable" : `Owner: ${opportunity.recommendedOwner}`}</p><span>{opportunity.priorityScore} priority · {opportunity.evidenceCount} supporting reviews · {opportunity.coveragePercent}% of usable reviews</span>{opportunity.digiaAddressable && opportunity.evidenceCount >= 10 && !opportunity.intervention ? <button className="fix-button" onClick={() => generateFix({ opportunityId: opportunity._id })}>Generate Fix</button> : null}{opportunity.intervention?.generationStatus === "running" ? <span>Generating recommendation…</span> : null}{opportunity.intervention?.generationStatus === "failed" ? <span className="fix-error">Fix generation failed: {opportunity.intervention.errorMessage}</span> : null}{opportunity.intervention?.generationStatus === "complete" ? <div className="fix-result"><strong>Recommended {opportunity.intervention.experienceType}</strong><span>Audience: {opportunity.intervention.audience}</span><span>Trigger: {opportunity.intervention.trigger}</span><span>Copy: {opportunity.intervention.suggestedCopy}</span><span>Success metric: {opportunity.intervention.successMetric}</span></div> : null}</div></article>)}</div> : null}
-        {previewReviews.length > 0 ? <div className="review-list"><h2>Source review preview</h2>{previewReviews.map((review) => <article className="review-card" key={review._id}><div><span>{review.rating}/5</span><time>{review.reviewDate ?? "Date unavailable"}</time></div><p>{review.originalText}</p><small>{review.sourceReviewId}</small></article>)}{reviews && reviews.length > previewReviews.length ? <p className="audit-note">Showing 20 of {reviews.length} source reviews. Open an opportunity to inspect its complete evidence.</p> : null}</div> : null}
+        {opportunities && opportunities.length > 0 ? <div className="opportunity-list"><h2>Ranked opportunities</h2>{opportunities.map((opportunity, index) => <article className="opportunity-card" key={opportunity._id}><div className="opportunity-rank">#{index + 1}</div><div className="opportunity-main"><Link className="opportunity-link" href={`/audits/${auditId}/opportunities/${opportunity._id}`}><strong>{opportunity.problemStatement}</strong></Link><p>{opportunity.issueType} · {opportunity.digiaAddressable ? "Digia addressable" : `Owner: ${opportunity.recommendedOwner}`}</p><span>{opportunity.priorityScore} / 10,000 priority · {opportunity.evidenceCount} supporting reviews · {opportunity.coveragePercent}% of usable reviews</span>{opportunity.digiaAddressable && opportunity.evidenceCount >= 10 && !opportunity.intervention ? <button className="fix-button" disabled={generatingOpportunityId === opportunity._id} aria-live="polite" onClick={() => handleGenerateFix(opportunity._id)}>{generatingOpportunityId === opportunity._id ? "Generating" : "Generate Fix"}</button> : null}{opportunity.intervention?.generationStatus === "running" ? <span>Generating recommendation…</span> : null}{opportunity.intervention?.generationStatus === "failed" ? <span className="fix-error">Fix generation failed: {opportunity.intervention.errorMessage}</span> : null}{opportunity.intervention?.generationStatus === "complete" ? <div className="fix-result"><strong>Recommended {opportunity.intervention.experienceType}</strong><span>Audience: {opportunity.intervention.audience}</span><span>Trigger: {opportunity.intervention.trigger}</span><span>Copy: {opportunity.intervention.suggestedCopy}</span><span>Success metric: {opportunity.intervention.successMetric}</span></div> : null}</div></article>)}</div> : null}
+        {previewReviews.length > 0 ? <div className="review-list"><h2>Source review preview</h2>{previewReviews.map((review) => <article className="review-card" key={review._id}><div><span>{review.rating}/5</span><time>{review.reviewDate ?? "Date unavailable"}</time></div><p>{review.originalText}</p></article>)}{reviews && reviews.length > previewReviews.length ? <p className="audit-note">Showing 20 of {reviews.length} source reviews. Open an opportunity to inspect its complete evidence.</p> : null}</div> : null}
       </section>
     </main>
   );
