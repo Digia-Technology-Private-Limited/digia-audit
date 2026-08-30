@@ -162,22 +162,14 @@ the previous 30 days, stop at the first confirmed cutoff/source exhaustion or
 10,000 unique reviews, persist window and coverage metadata, and pass only
 in-window reviews to analysis.
 
-Inspection findings:
+Inspection findings from before the current pagination implementation:
 
-- convex/scraper.ts currently uses google-play-scraper with num: 500 and
-  paginate: false.
+- The old scraper request used `num: 500` and `paginate: false`; those settings
+  are no longer in the active collection path.
 - Review records are normalized and deduplicated by sourceReviewId, with a
   derived fallback ID.
 - Review publication dates come from the scraper's raw date field and are
   stored as reviewDate strings.
-- convex/schema.ts currently has no persisted analysis-window, coverage, or
-  analyzed-count fields.
-- convex/audits.ts currently counts collected reviews and schedules Researcher
-  after usable reviews are saved.
-- convex/audits.ts getUsableReviews currently filters by quality only, not by
-  publication date.
-- convex/researcher.ts currently sends the entire usable-review array in one
-  OpenAI request; it has no batching or chunking.
 - No repository test suite was found.
 
 Decision:
@@ -216,3 +208,33 @@ Verification:
 - Two live Google Play checks returned newest-first 150-review pages with
   continuation tokens: Google Translate and Spotify.
 - No dedicated repository test suite exists.
+
+### Review pagination verification — Spotify (2026-08-30)
+
+- Pages requested: 67
+- Raw reviews returned: 10,050
+- Unique reviews fetched: 10,000
+- Duplicates removed: 0
+- Reviews inside the 30-day window: 10,000
+- Reviews analyzed by the application: not run in this scraper-only smoke test
+- Newest review date: 2026-08-29T14:22:48.805Z
+- Oldest review reached: 2026-08-15T08:22:43.463Z
+- 30-day cutoff reached: no (the 10,000 cap was reached first)
+- 10,000 cap reached: yes
+- Stop reason: `max_reviews_reached`
+- Result: pagination continued beyond 500; no active 500-review collection limit
+  was observed.
+
+### Full audit verification — WhatsApp (2026-08-30)
+
+- Pages fetched: 67
+- Unique reviews fetched: 10,000
+- Reviews in the 30-day window: 10,000
+- Reviews analyzed: 7,824 usable reviews
+- Newest review date: 2026-08-29T14:15:17.898Z
+- Oldest review reached: 2026-08-25T22:53:42.219Z
+- Stop reason: `max_reviews_reached`
+- Coverage: partial, because this high-volume app reached the 10,000 safety
+  ceiling before reaching the 30-day cutoff.
+- Ranked opportunity evidence validation: 11 relationships, 11 reviews
+  resolved, 0 missing/orphan references.

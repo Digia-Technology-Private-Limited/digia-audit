@@ -84,16 +84,27 @@ export const run = internalAction({
   handler: async (ctx, args) => {
     await ctx.runMutation(internal.audits.updateResearchStarted, { auditRunId: args.auditRunId });
     try {
-      const reviews = await ctx.runQuery(internal.audits.getUsableReviews, { auditRunId: args.auditRunId });
-      if (reviews.length === 0) {
+      let cursor: string | null = null;
+      let totalReviews = 0;
+      const candidateBatches: ResearchCandidate[][] = [];
+      while (true) {
+        const result: { page: ResearchReview[]; isDone: boolean; continueCursor: string } = await ctx.runQuery(internal.audits.getUsableReviewsPage, {
+          auditRunId: args.auditRunId,
+          paginationOpts: { numItems: 2000, cursor },
+        });
+        const reviews = result.page;
+        totalReviews += reviews.length;
+        const batches = chunkReviews(reviews);
+        for (let index = 0; index < batches.length; index += MAX_CONCURRENT_BATCHES) {
+          const batchGroup = batches.slice(index, index + MAX_CONCURRENT_BATCHES);
+          candidateBatches.push(...await Promise.all(batchGroup.map((batch) => runResearchBatch(batch))));
+        }
+        if (result.isDone) break;
+        cursor = result.continueCursor;
+      }
+      if (totalReviews === 0) {
         await ctx.runMutation(internal.audits.saveResearchResult, { auditRunId: args.auditRunId, candidates: [] });
         return;
-      }
-      const batches = chunkReviews(reviews);
-      const candidateBatches: ResearchCandidate[][] = [];
-      for (let index = 0; index < batches.length; index += MAX_CONCURRENT_BATCHES) {
-        const batchGroup = batches.slice(index, index + MAX_CONCURRENT_BATCHES);
-        candidateBatches.push(...await Promise.all(batchGroup.map((batch) => runResearchBatch(batch))));
       }
       await ctx.runMutation(internal.audits.saveResearchResult, { auditRunId: args.auditRunId, candidates: candidateBatches.flat() });
     } catch (error) {

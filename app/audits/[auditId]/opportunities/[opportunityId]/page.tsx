@@ -1,6 +1,6 @@
 import { OpportunityDetail } from "../../../../../components/OpportunityDetail";
 
-export default async function OpportunityPage({ params }: { params: Promise<{ opportunityId: string }> }) {
-  const { opportunityId } = await params;
-  return <OpportunityDetail opportunityId={opportunityId} />;
+export default async function OpportunityPage({ params }: { params: Promise<{ auditId: string; opportunityId: string }> }) {
+  const { auditId, opportunityId } = await params;
+  return <OpportunityDetail auditRunId={auditId} opportunityId={opportunityId} />;
 }

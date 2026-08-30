@@ -103,7 +103,7 @@ The Scraper Agent receives the Google Play Store app URL and:
 - Validates that it is a supported Play Store URL.
 - Identifies the app/package.
 - Fetches available Play Store reviews.
-- Collects as many recent reviews as the source returns, up to 500.
+- Collects newest-first recent reviews through pagination, up to 10,000 unique reviews or the selected time-window boundary.
 - Normalizes each review into a consistent structure.
 - Removes duplicate review records.
 - Preserves the original review text.

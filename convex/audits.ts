@@ -1,4 +1,5 @@
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -18,6 +19,59 @@ function isReviewInAnalysisWindow(reviewDate: string | undefined, audit: { analy
   if (audit.analysisWindowStart === undefined || audit.analysisWindowEnd === undefined) return true;
   const timestamp = reviewDate ? Date.parse(reviewDate) : Number.NaN;
   return Number.isFinite(timestamp) && timestamp >= audit.analysisWindowStart && timestamp <= audit.analysisWindowEnd;
+}
+
+async function getValidReviewIds(ctx: any, audit: { appId: Id<"apps">; analysisWindowStart?: number; analysisWindowEnd?: number }, auditRunId: Id<"auditRuns">, reviewIds: string[], knownObservedReviewIds?: Set<string>) {
+  const observedReviewIds = knownObservedReviewIds ?? new Set((await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q: any) => q.eq("auditRunId", auditRunId)).collect()).map((observation: any) => observation.reviewId as string));
+  const validIds: Id<"reviews">[] = [];
+  for (const reviewId of [...new Set(reviewIds)]) {
+    if (!observedReviewIds.has(reviewId)) continue;
+    const review = await ctx.db.get(reviewId as Id<"reviews">);
+    if (review?.appId === audit.appId && review.qualityStatus === "usable" && review.originalText.trim() && isReviewInAnalysisWindow(review.reviewDate, audit)) {
+      validIds.push(review._id);
+    }
+  }
+  return validIds;
+}
+
+async function getValidEvidence(ctx: any, opportunity: { _id: Id<"opportunities">; appId: Id<"apps">; auditRunId: Id<"auditRuns"> }, audit: { analysisWindowStart?: number; analysisWindowEnd?: number }) {
+  const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q: any) => q.eq("opportunityId", opportunity._id)).collect();
+  const resolvedReviewIds = new Set<string>();
+  const resolved = await Promise.all(evidence.map(async (item: any) => {
+    if (item.appId !== opportunity.appId || item.auditRunId !== opportunity.auditRunId) return null;
+    if (resolvedReviewIds.has(item.reviewId)) return null;
+    resolvedReviewIds.add(item.reviewId);
+    const review = await ctx.db.get(item.reviewId);
+    if (!review || review.appId !== opportunity.appId || review.qualityStatus !== "usable" || !review.originalText.trim() || !isReviewInAnalysisWindow(review.reviewDate, audit)) return null;
+    return { evidence: item, review };
+  }));
+  return resolved.filter((item: any): item is { evidence: any; review: any } => item !== null);
+}
+
+async function persistReviewBatch(ctx: any, auditRunId: Id<"auditRuns">, appId: Id<"apps">, reviews: any[], now: number) {
+  for (const review of reviews) {
+    const existing = await ctx.db
+      .query("reviews")
+      .withIndex("by_app_source_review", (q: any) => q.eq("appId", appId).eq("source", "googlePlay").eq("sourceReviewId", review.sourceReviewId))
+      .unique();
+    const reviewId = existing?._id ?? await ctx.db.insert("reviews", {
+      appId,
+      source: "googlePlay",
+      sourceReviewId: review.sourceReviewId,
+      sourceReviewIdKind: review.sourceReviewIdKind,
+      originalText: review.originalText,
+      rating: review.rating,
+      reviewDate: review.reviewDate,
+      scrapedAt: now,
+      version: review.version,
+      qualityStatus: review.qualityStatus,
+    });
+    const existingObservation = await ctx.db
+      .query("reviewObservations")
+      .withIndex("by_audit_review", (q: any) => q.eq("auditRunId", auditRunId).eq("reviewId", reviewId))
+      .unique();
+    if (!existingObservation) await ctx.db.insert("reviewObservations", { auditRunId, reviewId, observedAt: now });
+  }
 }
 
 export const create = mutation({
@@ -66,6 +120,9 @@ export const create = mutation({
       analysisWindowType: "fixed_days",
       analysisWindowDays: ANALYSIS_WINDOW_DAYS,
       reviewsFetched: 0,
+      pagesFetched: 0,
+      rawReviewsReturned: 0,
+      duplicateReviewsRemoved: 0,
       reviewsInWindow: 0,
       reviewsAnalyzed: 0,
       windowCoverageStatus: "partial",
@@ -122,6 +179,9 @@ export const retry = mutation({
       analysisWindowType: "fixed_days",
       analysisWindowDays: ANALYSIS_WINDOW_DAYS,
       reviewsFetched: 0,
+      pagesFetched: 0,
+      rawReviewsReturned: 0,
+      duplicateReviewsRemoved: 0,
       reviewsInWindow: 0,
       reviewsAnalyzed: 0,
       oldestReviewFetchedAt: undefined,
@@ -159,6 +219,11 @@ export const saveScrapeResult = internalMutation({
     skippedReviewCount: v.number(),
     lowQualityReviewCount: v.number(),
     reviewsFetched: v.number(),
+    reviewCountOverride: v.optional(v.number()),
+    usableReviewCountOverride: v.optional(v.number()),
+    pagesFetched: v.number(),
+    rawReviewsReturned: v.number(),
+    duplicateReviewsRemoved: v.number(),
     reviewsInWindow: v.number(),
     reviewsAnalyzed: v.number(),
     oldestReviewFetchedAt: v.optional(v.string()),
@@ -191,39 +256,10 @@ export const saveScrapeResult = internalMutation({
       }
     }
 
-    const observedReviewIds = [];
-    for (const review of args.reviews) {
-      const existing = await ctx.db
-        .query("reviews")
-        .withIndex("by_app_source_review", (q) => q.eq("appId", args.appId).eq("source", "googlePlay").eq("sourceReviewId", review.sourceReviewId))
-        .unique();
-      const reviewId = existing?._id ?? await ctx.db.insert("reviews", {
-        appId: args.appId,
-        source: "googlePlay",
-        sourceReviewId: review.sourceReviewId,
-        sourceReviewIdKind: review.sourceReviewIdKind,
-        originalText: review.originalText,
-        rating: review.rating,
-        reviewDate: review.reviewDate,
-        scrapedAt: now,
-        version: review.version,
-        qualityStatus: review.qualityStatus,
-      });
-      observedReviewIds.push(reviewId);
-    }
+    await persistReviewBatch(ctx, args.auditRunId, args.appId, args.reviews, now);
 
-    for (const reviewId of observedReviewIds) {
-      const existingObservation = await ctx.db
-        .query("reviewObservations")
-        .withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId).eq("reviewId", reviewId))
-        .unique();
-      if (!existingObservation) {
-        await ctx.db.insert("reviewObservations", { auditRunId: args.auditRunId, reviewId, observedAt: now });
-      }
-    }
-
-    const reviewCount = args.reviews.length;
-    const usableReviewCount = args.reviews.filter((review) => review.qualityStatus === "usable").length;
+    const reviewCount = args.reviewCountOverride ?? args.reviews.length;
+    const usableReviewCount = args.usableReviewCountOverride ?? args.reviews.filter((review) => review.qualityStatus === "usable").length;
     await ctx.db.patch(args.auditRunId, {
       scrapeStatus: args.scrapeStatus,
       currentStage: "filtering",
@@ -232,6 +268,9 @@ export const saveScrapeResult = internalMutation({
       skippedReviewCount: args.skippedReviewCount,
       lowQualityReviewCount: args.lowQualityReviewCount,
       reviewsFetched: args.reviewsFetched,
+      pagesFetched: args.pagesFetched,
+      rawReviewsReturned: args.rawReviewsReturned,
+      duplicateReviewsRemoved: args.duplicateReviewsRemoved,
       reviewsInWindow: args.reviewsInWindow,
       reviewsAnalyzed: args.reviewsAnalyzed,
       oldestReviewFetchedAt: args.oldestReviewFetchedAt,
@@ -242,6 +281,27 @@ export const saveScrapeResult = internalMutation({
       updatedAt: now,
     });
     await ctx.scheduler.runAfter(0, internal.researcher.run, { auditRunId: args.auditRunId, appId: args.appId });
+  },
+});
+
+export const saveScrapeBatch = internalMutation({
+  args: {
+    auditRunId: v.id("auditRuns"),
+    appId: v.id("apps"),
+    reviews: v.array(v.object({
+      sourceReviewId: v.string(),
+      sourceReviewIdKind: v.union(v.literal("native"), v.literal("derived")),
+      originalText: v.string(),
+      rating: v.number(),
+      reviewDate: v.optional(v.string()),
+      version: v.optional(v.string()),
+      qualityStatus: v.union(v.literal("usable"), v.literal("lowQuality")),
+    })),
+  },
+  handler: async (ctx, args) => {
+    const audit = await ctx.db.get(args.auditRunId);
+    if (!audit) throw new Error("Audit not found");
+    await persistReviewBatch(ctx, args.auditRunId, args.appId, args.reviews, Date.now());
   },
 });
 
@@ -265,12 +325,10 @@ export const saveResearchResult = internalMutation({
   handler: async (ctx, args) => {
     const audit = await ctx.db.get(args.auditRunId);
     if (!audit) throw new Error("Audit not found");
-    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
-    const observedIds = new Set(observations.map((observation) => observation.reviewId));
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).take(20);
+    const observedReviewIds = new Set(observations.map((observation) => observation.reviewId as string));
     for (const candidate of args.candidates) {
-      const evidenceReviewIds = [...new Set(candidate.evidenceReviewIds)]
-        .filter((reviewId) => observedIds.has(reviewId as Id<"reviews">))
-        .map((reviewId) => reviewId as Id<"reviews">);
+      const evidenceReviewIds = await getValidReviewIds(ctx, audit, args.auditRunId, candidate.evidenceReviewIds, observedReviewIds);
       if (!candidate.problemStatement.trim() || evidenceReviewIds.length === 0) continue;
       await ctx.db.insert("problemCandidates", {
         appId: audit.appId,
@@ -292,14 +350,20 @@ export const getAnalystInput = internalQuery({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     const candidates = await ctx.db.query("problemCandidates").withIndex("by_audit", (q) => q.eq("auditRunId", args.auditRunId)).collect();
-    return await Promise.all(candidates.filter((candidate) => candidate.evidenceReviewIds.length >= MIN_ACTIONABLE_EVIDENCE).map(async (candidate) => ({
+    const audit = await ctx.db.get(args.auditRunId);
+    return await Promise.all(candidates.map(async (candidate) => {
+      const evidenceReviewIds = (await Promise.all(candidate.evidenceReviewIds.map((reviewId) => ctx.db.get(reviewId))))
+        .filter((review): review is NonNullable<typeof review> => review !== null && review.appId === (audit?.appId ?? candidate.appId) && review.qualityStatus === "usable" && review.originalText.trim().length > 0 && isReviewInAnalysisWindow(review.reviewDate, audit ?? {}))
+        .map((review) => review._id);
+      return {
       candidateId: candidate._id,
       problemStatement: candidate.problemStatement,
-      evidence: (await Promise.all(candidate.evidenceReviewIds.map((reviewId) => ctx.db.get(reviewId)))).filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })),
+      evidence: (await Promise.all(evidenceReviewIds.map((reviewId) => ctx.db.get(reviewId)))).filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })),
       category: candidate.category,
-      supportingSignalCount: candidate.supportingSignalCount,
+      supportingSignalCount: evidenceReviewIds.length,
       researcherConfidence: candidate.confidence,
-    })));
+      };
+    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
   },
 });
 
@@ -331,12 +395,10 @@ export const saveAnalystResult = internalMutation({
     const audit = await ctx.db.get(args.auditRunId);
     if (!audit) throw new Error("Audit not found");
     const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
-    const observedIds = new Set(observations.map((observation) => observation.reviewId));
+    const observedReviewIds = new Set(observations.map((observation) => observation.reviewId as string));
     const now = Date.now();
     for (const opportunity of args.opportunities) {
-      const evidenceReviewIds = [...new Set(opportunity.evidenceReviewIds)]
-        .filter((reviewId) => observedIds.has(reviewId as Id<"reviews">))
-        .map((reviewId) => reviewId as Id<"reviews">);
+      const evidenceReviewIds = await getValidReviewIds(ctx, audit, args.auditRunId, opportunity.evidenceReviewIds, observedReviewIds);
       if (!opportunity.problemStatement.trim() || evidenceReviewIds.length < MIN_ACTIONABLE_EVIDENCE) continue;
       const frequency = Math.max(1, Math.min(10, Math.round(opportunity.frequency)));
       const severity = Math.max(1, Math.min(10, Math.round(opportunity.severity)));
@@ -380,6 +442,9 @@ export const saveScrapeFailure = internalMutation({
   args: {
     auditRunId: v.id("auditRuns"),
     message: v.string(),
+    pagesFetched: v.optional(v.number()),
+    rawReviewsReturned: v.optional(v.number()),
+    duplicateReviewsRemoved: v.optional(v.number()),
     collectionStopReason: v.optional(v.union(
       v.literal("pagination_failure"),
       v.literal("timeout"),
@@ -394,6 +459,9 @@ export const saveScrapeFailure = internalMutation({
       scrapeError: args.message,
       windowCoverageStatus: "partial",
       collectionStopReason: args.collectionStopReason ?? "pagination_failure",
+      pagesFetched: args.pagesFetched,
+      rawReviewsReturned: args.rawReviewsReturned,
+      duplicateReviewsRemoved: args.duplicateReviewsRemoved,
       updatedAt: Date.now(),
     });
   },
@@ -409,7 +477,7 @@ export const get = query({
 export const listReviews = query({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
-    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).take(20);
     const reviews = await Promise.all(observations.map((observation) => ctx.db.get(observation.reviewId)));
     return reviews.filter((review): review is NonNullable<typeof review> => review !== null);
   },
@@ -428,7 +496,8 @@ export const listOpportunities = query({
     const opportunities = await ctx.db.query("opportunities").withIndex("by_audit_score", (q) => q.eq("auditRunId", args.auditRunId)).order("desc").collect();
     const audit = await ctx.db.get(args.auditRunId);
     return (await Promise.all(opportunities.map(async (opportunity) => {
-      const evidenceCount = (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length;
+      const validEvidence = await getValidEvidence(ctx, opportunity, audit ?? {});
+      const evidenceCount = validEvidence.length;
       return {
         ...opportunity,
         evidenceCount,
@@ -440,15 +509,17 @@ export const listOpportunities = query({
 });
 
 export const getOpportunity = query({
-  args: { opportunityId: v.id("opportunities") },
+  args: { opportunityId: v.id("opportunities"), auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     const opportunity = await ctx.db.get(args.opportunityId);
-    if (!opportunity) return null;
+    if (!opportunity || opportunity.auditRunId !== args.auditRunId) return null;
+    const audit = await ctx.db.get(opportunity.auditRunId);
+    const validEvidence = await getValidEvidence(ctx, opportunity, audit ?? {});
     const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
-    const reviews = await Promise.all(evidence.map((item) => ctx.db.get(item.reviewId)));
+    const reviews = validEvidence.map((item: { review: any }) => item.review);
     const changes = await ctx.db.query("opportunityChanges").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").collect();
     const intervention = await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").first();
-    return { opportunity, reviews: reviews.filter((review): review is NonNullable<typeof review> => review !== null), changes, intervention: intervention ?? null };
+    return { opportunity, reviews, evidenceCount: validEvidence.length, missingEvidenceCount: evidence.length - validEvidence.length, changes, intervention: intervention ?? null };
   },
 });
 
@@ -471,7 +542,8 @@ export const generateFix = mutation({
     const opportunity = await ctx.db.get(args.opportunityId);
     if (!opportunity) throw new Error("Opportunity not found");
     if (!opportunity.digiaAddressable) throw new Error("This problem is not marked Digia-addressable.");
-    const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
+    const audit = await ctx.db.get(opportunity.auditRunId);
+    const evidence = await getValidEvidence(ctx, opportunity, audit ?? {});
     if (evidence.length < 2) throw new Error("At least two supporting reviews are required to generate a fix.");
     const current = await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).order("desc").first();
     if (current?.generationStatus === "running") return current._id;
@@ -497,9 +569,9 @@ export const getPlannerInput = internalQuery({
   handler: async (ctx, args) => {
     const opportunity = await ctx.db.get(args.opportunityId);
     if (!opportunity) throw new Error("Opportunity not found");
-    const evidence = await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId)).collect();
-    const reviews = await Promise.all(evidence.map((item) => ctx.db.get(item.reviewId)));
-    return { opportunity, reviews: reviews.filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })) };
+    const audit = await ctx.db.get(opportunity.auditRunId);
+    const evidence = await getValidEvidence(ctx, opportunity, audit ?? {});
+    return { opportunity, reviews: evidence.map(({ review }) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })) };
   },
 });
 
@@ -525,14 +597,14 @@ export const failIntervention = internalMutation({
   },
 });
 
-export const getUsableReviews = internalQuery({
-  args: { auditRunId: v.id("auditRuns") },
+export const getUsableReviewsPage = internalQuery({
+  args: { auditRunId: v.id("auditRuns"), paginationOpts: paginationOptsValidator },
   handler: async (ctx, args) => {
-    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).paginate(args.paginationOpts);
     const audit = await ctx.db.get(args.auditRunId);
-    const reviews = await Promise.all(observations.map((observation) => ctx.db.get(observation.reviewId)));
-    return reviews
+    const reviews = await Promise.all(observations.page.map((observation) => ctx.db.get(observation.reviewId)));
+    return { ...observations, page: reviews
       .filter((review): review is NonNullable<typeof review> => review !== null && review.qualityStatus === "usable" && isReviewInAnalysisWindow(review.reviewDate, audit ?? {}))
-      .map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null }));
+      .map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })) };
   },
 });
