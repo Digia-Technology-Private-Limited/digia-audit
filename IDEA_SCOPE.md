@@ -21,7 +21,7 @@ The process fails because:
 - Recommendations often jump straight to “add a tooltip” without deciding whether an in-app intervention can solve the problem.
 - Riya cannot easily show the exact reviews supporting a backlog item.
 
-Digia Audit should help her answer:
+Pulse should help her answer:
 
 > What is the most important recurring user problem I should act on next, and can Digia meaningfully address it?
 
@@ -462,7 +462,7 @@ The V1 success condition is narrower:
 
 The primary riskiest assumption is now:
 
-> Digia Audit can reliably retrieve enough useful review data from an arbitrary supported Google Play Store app URL to produce a meaningful audit.
+> Pulse can reliably retrieve enough useful review data from an arbitrary supported Google Play Store app URL to produce a meaningful audit.
 
 This replaces the previous primary riskiest assumption because scraping is now a prerequisite for every downstream value claim. If the product cannot retrieve real reviews reliably, there is no grounded audit, no evidence trail, and no meaningful PM decision to evaluate.
 

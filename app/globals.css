@@ -63,6 +63,8 @@ button, input { font: inherit; }
 }
 
 .eyebrow { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.brand-lockup strong { color: var(--ink); font-size: 15px; letter-spacing: -0.03em; }
+.brand-lockup small { color: var(--muted); font: 10px "DM Mono", monospace; letter-spacing: 0.04em; text-transform: none; }
 .eyebrow-mark, .footnote-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lime-deep); }
 .entry-copy { max-width: 600px; margin: 32px 0 42px; }
 .entry-copy h1 { margin: 0; font-size: clamp(42px, 7vw, 74px); line-height: 0.98; letter-spacing: -0.065em; font-weight: 800; }

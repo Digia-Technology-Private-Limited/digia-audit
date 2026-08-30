@@ -3,8 +3,14 @@ import { ConvexClientProvider } from "../components/ConvexClientProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Digia Audit",
-  description: "Find the user problem your product should act on next.",
+  title: "Pulse | Digia",
+  description: "Pulse helps product teams understand what users are struggling with and what to act on next.",
+  openGraph: {
+    title: "Pulse | Digia",
+    description: "Pulse helps product teams understand what users are struggling with and what to act on next.",
+    siteName: "Pulse by Digia",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

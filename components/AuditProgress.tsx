@@ -61,7 +61,7 @@ export function AuditProgress({ auditId }: { auditId: string }) {
   return (
     <main className="audit-shell">
       <section className="audit-panel" aria-labelledby="audit-title">
-        <div className="eyebrow"><span className="eyebrow-mark" /> Digia Audit</div>
+        <div className="eyebrow"><span className="eyebrow-mark" /> Pulse</div>
         <div className="audit-heading">
           <div>
             <p className="audit-kicker">{audit.status === "complete" ? "Audit ready" : "Audit in progress"}</p>

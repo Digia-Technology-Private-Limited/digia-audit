@@ -5,20 +5,21 @@ export default function Home() {
     <main className="entry-shell">
       <div className="entry-grid" aria-hidden="true" />
       <section className="entry-card" aria-labelledby="page-title">
-        <div className="eyebrow">
+        <div className="eyebrow brand-lockup">
           <span className="eyebrow-mark" />
-          Product feedback, made useful
+          <strong>Pulse</strong>
+          <small>by Digia</small>
         </div>
 
         <div className="entry-copy">
           <h1 id="page-title">
-            Find the problem
+            Know what to
             <br />
-            worth fixing next.
+            act on next.
           </h1>
           <p>
-            Digia Audit reads real Google Play reviews and turns scattered
-            complaints into one evidence-backed product decision.
+            Pulse helps product teams understand what users are struggling
+            with and what to act on next.
           </p>
         </div>
 
