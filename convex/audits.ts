@@ -3,6 +3,8 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
+const MIN_ACTIONABLE_EVIDENCE = 10;
+
 export const create = mutation({
   args: {
     sourceUrl: v.string(),
@@ -233,7 +235,7 @@ export const getAnalystInput = internalQuery({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     const candidates = await ctx.db.query("problemCandidates").withIndex("by_audit", (q) => q.eq("auditRunId", args.auditRunId)).collect();
-    return await Promise.all(candidates.map(async (candidate) => ({
+    return await Promise.all(candidates.filter((candidate) => candidate.evidenceReviewIds.length >= MIN_ACTIONABLE_EVIDENCE).map(async (candidate) => ({
       candidateId: candidate._id,
       problemStatement: candidate.problemStatement,
       evidence: (await Promise.all(candidate.evidenceReviewIds.map((reviewId) => ctx.db.get(reviewId)))).filter((review): review is NonNullable<typeof review> => review !== null).map((review) => ({ reviewId: review._id, text: review.originalText, rating: review.rating, date: review.reviewDate ?? null })),
@@ -278,7 +280,7 @@ export const saveAnalystResult = internalMutation({
       const evidenceReviewIds = [...new Set(opportunity.evidenceReviewIds)]
         .filter((reviewId) => observedIds.has(reviewId as Id<"reviews">))
         .map((reviewId) => reviewId as Id<"reviews">);
-      if (!opportunity.problemStatement.trim() || evidenceReviewIds.length === 0) continue;
+      if (!opportunity.problemStatement.trim() || evidenceReviewIds.length < MIN_ACTIONABLE_EVIDENCE) continue;
       const frequency = Math.max(1, Math.min(10, Math.round(opportunity.frequency)));
       const severity = Math.max(1, Math.min(10, Math.round(opportunity.severity)));
       const confidence = Math.max(1, Math.min(10, Math.round(opportunity.confidence)));
@@ -357,11 +359,16 @@ export const listOpportunities = query({
   args: { auditRunId: v.id("auditRuns") },
   handler: async (ctx, args) => {
     const opportunities = await ctx.db.query("opportunities").withIndex("by_audit_score", (q) => q.eq("auditRunId", args.auditRunId)).order("desc").collect();
-    return await Promise.all(opportunities.map(async (opportunity) => ({
-      ...opportunity,
-      evidenceCount: (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length,
-      intervention: (await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).order("desc").first()) ?? null,
-    })));
+    const audit = await ctx.db.get(args.auditRunId);
+    return (await Promise.all(opportunities.map(async (opportunity) => {
+      const evidenceCount = (await ctx.db.query("evidence").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).collect()).length;
+      return {
+        ...opportunity,
+        evidenceCount,
+        coveragePercent: audit && audit.usableReviewCount > 0 ? Math.round((evidenceCount / audit.usableReviewCount) * 100) : 0,
+        intervention: (await ctx.db.query("interventions").withIndex("by_opportunity", (q) => q.eq("opportunityId", opportunity._id)).order("desc").first()) ?? null,
+      };
+    }))).filter((opportunity) => opportunity.evidenceCount >= MIN_ACTIONABLE_EVIDENCE);
   },
 });
 
