@@ -86,6 +86,7 @@ export const run = internalAction({
     try {
       let cursor: string | null = null;
       let totalReviews = 0;
+      let analyzedReviews = 0;
       const candidateBatches: ResearchCandidate[][] = [];
       while (true) {
         const result: { page: ResearchReview[]; isDone: boolean; continueCursor: string } = await ctx.runQuery(internal.audits.getUsableReviewsPage, {
@@ -98,6 +99,8 @@ export const run = internalAction({
         for (let index = 0; index < batches.length; index += MAX_CONCURRENT_BATCHES) {
           const batchGroup = batches.slice(index, index + MAX_CONCURRENT_BATCHES);
           candidateBatches.push(...await Promise.all(batchGroup.map((batch) => runResearchBatch(batch))));
+          analyzedReviews += batchGroup.reduce((count, batch) => count + batch.length, 0);
+          await ctx.runMutation(internal.audits.updateResearchProgress, { auditRunId: args.auditRunId, reviewsAnalyzed: analyzedReviews });
         }
         if (result.isDone) break;
         cursor = result.continueCursor;

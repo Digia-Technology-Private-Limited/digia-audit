@@ -38,9 +38,10 @@ const outputSchema = {
 export const run = internalAction({
   args: { auditRunId: v.id("auditRuns"), appId: v.id("apps") },
   handler: async (ctx, args) => {
-    await ctx.runMutation(internal.audits.updateAnalysisStage, { auditRunId: args.auditRunId, stage: "diagnosing" });
+    await ctx.runMutation(internal.audits.updateAnalysisStage, { auditRunId: args.auditRunId, stage: "consolidating" });
     try {
       const candidates = await ctx.runQuery(internal.audits.getAnalystInput, { auditRunId: args.auditRunId });
+      await ctx.runMutation(internal.audits.updateAnalysisStage, { auditRunId: args.auditRunId, stage: "diagnosing" });
       if (candidates.length === 0) {
         await ctx.runMutation(internal.audits.saveAnalystResult, { auditRunId: args.auditRunId, opportunities: [] });
         return;
@@ -61,6 +62,7 @@ export const run = internalAction({
       const outputText = body.output_text ?? body.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "";
       const parsed = JSON.parse(outputText) as { opportunities?: unknown };
       if (!Array.isArray(parsed.opportunities)) throw new Error("Product Analyst returned an invalid opportunity list.");
+      await ctx.runMutation(internal.audits.updateAnalysisStage, { auditRunId: args.auditRunId, stage: "ranking" });
       await ctx.runMutation(internal.audits.saveAnalystResult, { auditRunId: args.auditRunId, opportunities: parsed.opportunities as never[] });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Product Analyst failed unexpectedly.";

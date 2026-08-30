@@ -53,16 +53,6 @@ function isTimeout(error: unknown) {
   return /timed out/i.test(error instanceof Error ? error.message : String(error));
 }
 
-async function saveReviewBatches(ctx: any, auditRunId: Id<"auditRuns">, appId: Id<"apps">, reviews: any[]) {
-  for (let index = 0; index < reviews.length; index += REVIEW_STORAGE_BATCH_SIZE) {
-    await ctx.runMutation(internal.audits.saveScrapeBatch, {
-      auditRunId,
-      appId,
-      reviews: reviews.slice(index, index + REVIEW_STORAGE_BATCH_SIZE),
-    });
-  }
-}
-
 export const run = internalAction({
   args: { auditRunId: v.id("auditRuns"), packageId: v.string() },
   handler: async (ctx, args) => {
@@ -89,6 +79,7 @@ export const run = internalAction({
     let lowQualityReviewCount = 0;
     let oldestReviewFetchedAt: string | undefined;
     let newestReviewFetchedAt: string | undefined;
+    let persistedNormalizedCount = 0;
 
     try {
       audit = await ctx.runQuery(api.audits.get, { auditRunId: args.auditRunId });
@@ -100,6 +91,24 @@ export const run = internalAction({
       developer = app.developer;
       let nextPaginationToken: string | null = null;
       let stopReason: "window_reached" | "source_exhausted" | "max_reviews_reached" = "source_exhausted";
+      const flushStoredBatches = async (flushRemainder = false) => {
+        while (normalized.length - persistedNormalizedCount >= REVIEW_STORAGE_BATCH_SIZE || (flushRemainder && persistedNormalizedCount < normalized.length)) {
+          const nextBatch = normalized.slice(persistedNormalizedCount, persistedNormalizedCount + REVIEW_STORAGE_BATCH_SIZE);
+          await ctx.runMutation(internal.audits.saveScrapeBatch, { auditRunId: args.auditRunId, appId: audit!.appId, reviews: nextBatch });
+          persistedNormalizedCount += nextBatch.length;
+          await ctx.runMutation(internal.audits.updateScrapeProgress, {
+            auditRunId: args.auditRunId,
+            reviewsFetched,
+            reviewsUnique: persistedNormalizedCount,
+            reviewsInWindow: persistedNormalizedCount,
+            pagesFetched,
+            rawReviewsReturned,
+            duplicateReviewsRemoved,
+            oldestReviewFetchedAt,
+            newestReviewFetchedAt,
+          });
+        }
+      };
 
       while (true) {
         const result: ReviewsResponse | RawReview[] = await withTimeout(gplay.reviews({
@@ -171,6 +180,8 @@ export const run = internalAction({
           }
         }
 
+        await flushStoredBatches();
+
         if (stopReason === "max_reviews_reached") break;
         if (reachedWindowBoundary) {
           stopReason = "window_reached";
@@ -187,7 +198,8 @@ export const run = internalAction({
       if (skippedReviewCount > 0) warnings.push(`${skippedReviewCount} malformed review record(s) were skipped.`);
       if (normalized.length < 10) warnings.push("Fewer than 10 reviews were available. This audit is low confidence.");
       if (stopReason === "max_reviews_reached") warnings.push(`The ${MAX_REVIEWS_PER_AUDIT.toLocaleString()} review collection limit was reached before the full 30-day window was covered.`);
-      await saveReviewBatches(ctx, args.auditRunId, audit.appId, normalized);
+      await flushStoredBatches(true);
+      await ctx.runMutation(internal.audits.updateNormalizationStarted, { auditRunId: args.auditRunId, reviewsFetched, reviewsUnique: normalized.length, reviewsInWindow: normalized.length });
       await ctx.runMutation(internal.audits.saveScrapeResult, {
         auditRunId: args.auditRunId,
         appId: audit.appId,
@@ -203,7 +215,7 @@ export const run = internalAction({
         rawReviewsReturned,
         duplicateReviewsRemoved,
         reviewsInWindow: normalized.length,
-        reviewsAnalyzed: normalized.filter((review) => review.qualityStatus === "usable").length,
+        reviewsAnalyzed: 0,
         oldestReviewFetchedAt,
         newestReviewFetchedAt,
         windowCoverageStatus: stopReason === "window_reached" || stopReason === "source_exhausted" ? "complete" : "partial",
@@ -214,7 +226,14 @@ export const run = internalAction({
     } catch (error) {
       if (audit && reviewsFetched > 0) {
         const timeout = isTimeout(error);
-        await saveReviewBatches(ctx, args.auditRunId, audit.appId, normalized);
+        await (async () => {
+          while (persistedNormalizedCount < normalized.length) {
+            const nextBatch = normalized.slice(persistedNormalizedCount, persistedNormalizedCount + REVIEW_STORAGE_BATCH_SIZE);
+            await ctx.runMutation(internal.audits.saveScrapeBatch, { auditRunId: args.auditRunId, appId: audit!.appId, reviews: nextBatch });
+            persistedNormalizedCount += nextBatch.length;
+          }
+        })();
+        await ctx.runMutation(internal.audits.updateNormalizationStarted, { auditRunId: args.auditRunId, reviewsFetched, reviewsUnique: normalized.length, reviewsInWindow: normalized.length });
         await ctx.runMutation(internal.audits.saveScrapeResult, {
           auditRunId: args.auditRunId,
           appId: audit.appId,
@@ -230,7 +249,7 @@ export const run = internalAction({
           rawReviewsReturned,
           duplicateReviewsRemoved,
           reviewsInWindow: normalized.length,
-          reviewsAnalyzed: normalized.filter((review) => review.qualityStatus === "usable").length,
+          reviewsAnalyzed: 0,
           oldestReviewFetchedAt,
           newestReviewFetchedAt,
           windowCoverageStatus: "partial",

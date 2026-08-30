@@ -120,11 +120,16 @@ export const create = mutation({
       analysisWindowType: "fixed_days",
       analysisWindowDays: ANALYSIS_WINDOW_DAYS,
       reviewsFetched: 0,
+      reviewsUnique: 0,
       pagesFetched: 0,
       rawReviewsReturned: 0,
       duplicateReviewsRemoved: 0,
       reviewsInWindow: 0,
+      reviewsEligible: 0,
       reviewsAnalyzed: 0,
+      problemCandidatesCount: 0,
+      problemsCount: 0,
+      opportunitiesCount: 0,
       windowCoverageStatus: "partial",
       reviewCount: 0,
       usableReviewCount: 0,
@@ -179,11 +184,16 @@ export const retry = mutation({
       analysisWindowType: "fixed_days",
       analysisWindowDays: ANALYSIS_WINDOW_DAYS,
       reviewsFetched: 0,
+      reviewsUnique: 0,
       pagesFetched: 0,
       rawReviewsReturned: 0,
       duplicateReviewsRemoved: 0,
       reviewsInWindow: 0,
+      reviewsEligible: 0,
       reviewsAnalyzed: 0,
+      problemCandidatesCount: 0,
+      problemsCount: 0,
+      opportunitiesCount: 0,
       oldestReviewFetchedAt: undefined,
       newestReviewFetchedAt: undefined,
       windowCoverageStatus: "partial",
@@ -268,10 +278,12 @@ export const saveScrapeResult = internalMutation({
       skippedReviewCount: args.skippedReviewCount,
       lowQualityReviewCount: args.lowQualityReviewCount,
       reviewsFetched: args.reviewsFetched,
+      reviewsUnique: args.reviewsInWindow,
       pagesFetched: args.pagesFetched,
       rawReviewsReturned: args.rawReviewsReturned,
       duplicateReviewsRemoved: args.duplicateReviewsRemoved,
       reviewsInWindow: args.reviewsInWindow,
+      reviewsEligible: usableReviewCount,
       reviewsAnalyzed: args.reviewsAnalyzed,
       oldestReviewFetchedAt: args.oldestReviewFetchedAt,
       newestReviewFetchedAt: args.newestReviewFetchedAt,
@@ -281,6 +293,47 @@ export const saveScrapeResult = internalMutation({
       updatedAt: now,
     });
     await ctx.scheduler.runAfter(0, internal.researcher.run, { auditRunId: args.auditRunId, appId: args.appId });
+  },
+});
+
+export const updateScrapeProgress = internalMutation({
+  args: {
+    auditRunId: v.id("auditRuns"),
+    reviewsFetched: v.number(),
+    reviewsUnique: v.number(),
+    reviewsInWindow: v.number(),
+    pagesFetched: v.number(),
+    rawReviewsReturned: v.number(),
+    duplicateReviewsRemoved: v.number(),
+    oldestReviewFetchedAt: v.optional(v.string()),
+    newestReviewFetchedAt: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, {
+      currentStage: "collecting",
+      reviewsFetched: args.reviewsFetched,
+      reviewsUnique: args.reviewsUnique,
+      reviewsInWindow: args.reviewsInWindow,
+      pagesFetched: args.pagesFetched,
+      rawReviewsReturned: args.rawReviewsReturned,
+      duplicateReviewsRemoved: args.duplicateReviewsRemoved,
+      oldestReviewFetchedAt: args.oldestReviewFetchedAt,
+      newestReviewFetchedAt: args.newestReviewFetchedAt,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const updateNormalizationStarted = internalMutation({
+  args: { auditRunId: v.id("auditRuns"), reviewsFetched: v.number(), reviewsUnique: v.number(), reviewsInWindow: v.number() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, {
+      currentStage: "normalizing",
+      reviewsFetched: args.reviewsFetched,
+      reviewsUnique: args.reviewsUnique,
+      reviewsInWindow: args.reviewsInWindow,
+      updatedAt: Date.now(),
+    });
   },
 });
 
@@ -312,6 +365,13 @@ export const updateResearchStarted = internalMutation({
   },
 });
 
+export const updateResearchProgress = internalMutation({
+  args: { auditRunId: v.id("auditRuns"), reviewsAnalyzed: v.number() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.auditRunId, { currentStage: "researching", reviewsAnalyzed: args.reviewsAnalyzed, updatedAt: Date.now() });
+  },
+});
+
 export const saveResearchResult = internalMutation({
   args: {
     auditRunId: v.id("auditRuns"),
@@ -325,8 +385,9 @@ export const saveResearchResult = internalMutation({
   handler: async (ctx, args) => {
     const audit = await ctx.db.get(args.auditRunId);
     if (!audit) throw new Error("Audit not found");
-    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).take(20);
+    const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
     const observedReviewIds = new Set(observations.map((observation) => observation.reviewId as string));
+    let problemCandidatesCount = 0;
     for (const candidate of args.candidates) {
       const evidenceReviewIds = await getValidReviewIds(ctx, audit, args.auditRunId, candidate.evidenceReviewIds, observedReviewIds);
       if (!candidate.problemStatement.trim() || evidenceReviewIds.length === 0) continue;
@@ -340,8 +401,9 @@ export const saveResearchResult = internalMutation({
         confidence: Math.max(0, Math.min(1, candidate.confidence)),
         status: "accepted",
       });
+      problemCandidatesCount += 1;
     }
-    await ctx.db.patch(args.auditRunId, { analysisStatus: "complete", analysisError: undefined, currentStage: "consolidating", updatedAt: Date.now() });
+    await ctx.db.patch(args.auditRunId, { analysisStatus: "running", analysisError: undefined, problemCandidatesCount, currentStage: "consolidating", updatedAt: Date.now() });
     await ctx.scheduler.runAfter(0, internal.analyst.run, { auditRunId: args.auditRunId, appId: audit.appId });
   },
 });
@@ -397,6 +459,7 @@ export const saveAnalystResult = internalMutation({
     const observations = await ctx.db.query("reviewObservations").withIndex("by_audit_review", (q) => q.eq("auditRunId", args.auditRunId)).collect();
     const observedReviewIds = new Set(observations.map((observation) => observation.reviewId as string));
     const now = Date.now();
+    let opportunitiesCount = 0;
     for (const opportunity of args.opportunities) {
       const evidenceReviewIds = await getValidReviewIds(ctx, audit, args.auditRunId, opportunity.evidenceReviewIds, observedReviewIds);
       if (!opportunity.problemStatement.trim() || evidenceReviewIds.length < MIN_ACTIONABLE_EVIDENCE) continue;
@@ -426,8 +489,9 @@ export const saveAnalystResult = internalMutation({
       for (const reviewId of evidenceReviewIds) {
         await ctx.db.insert("evidence", { appId: audit.appId, auditRunId: args.auditRunId, opportunityId, reviewId });
       }
+      opportunitiesCount += 1;
     }
-    await ctx.db.patch(args.auditRunId, { status: "complete", completedAt: now, currentStage: "preparing", updatedAt: now });
+    await ctx.db.patch(args.auditRunId, { status: "complete", analysisStatus: "complete", completedAt: now, currentStage: "preparing", problemsCount: opportunitiesCount, opportunitiesCount, updatedAt: now });
   },
 });
 

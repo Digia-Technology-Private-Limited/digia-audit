@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { api } from "../convex/_generated/api";
@@ -18,6 +18,52 @@ const stages = [
   ["preparing", "Preparing the audit"],
 ] as const;
 
+type ConfirmedNumber = number | undefined;
+
+function useAnimatedNumber(target: ConfirmedNumber, duration = 500) {
+  const safeTarget = target ?? 0;
+  const [displayValue, setDisplayValue] = useState(safeTarget);
+  const displayRef = useRef(safeTarget);
+  const frameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const from = displayRef.current;
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    if (from === safeTarget) return;
+    if (safeTarget < from || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      displayRef.current = safeTarget;
+      setDisplayValue(safeTarget);
+      return;
+    }
+
+    const startedAt = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const nextValue = Math.min(safeTarget, Math.round(from + (safeTarget - from) * eased));
+      displayRef.current = nextValue;
+      setDisplayValue(nextValue);
+      if (progress < 1) frameRef.current = requestAnimationFrame(tick);
+    };
+    frameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    };
+  }, [safeTarget, duration]);
+
+  return displayValue;
+}
+
+function formatCount(value: ConfirmedNumber) {
+  return (value ?? 0).toLocaleString();
+}
+
+function formatDate(value: string | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 export function AuditProgress({ auditId }: { auditId: string }) {
   const audit = useQuery(api.audits.get, { auditRunId: auditId as Id<"auditRuns"> });
   const reviews = useQuery(api.audits.listReviews, { auditRunId: auditId as Id<"auditRuns"> });
@@ -26,6 +72,11 @@ export function AuditProgress({ auditId }: { auditId: string }) {
   const generateFix = useMutation(api.audits.generateFix);
   const retryAudit = useMutation(api.audits.retry);
   const [generatingOpportunityId, setGeneratingOpportunityId] = useState<Id<"opportunities"> | null>(null);
+  const displayedFetched = useAnimatedNumber(audit?.reviewsFetched, 550);
+  const displayedUnique = useAnimatedNumber(audit?.reviewsUnique);
+  const displayedEligible = useAnimatedNumber(audit?.reviewsEligible ?? audit?.usableReviewCount);
+  const displayedAnalyzed = useAnimatedNumber(audit?.reviewsAnalyzed);
+  const displayedCandidates = useAnimatedNumber(audit?.problemCandidatesCount);
 
   const handleGenerateFix = async (opportunityId: Id<"opportunities">) => {
     setGeneratingOpportunityId(opportunityId);
@@ -59,6 +110,28 @@ export function AuditProgress({ auditId }: { auditId: string }) {
   const unconfirmedCandidates = candidates?.filter((candidate) => candidate.supportingSignalCount < 10) ?? [];
   const reviewsAnalyzed = audit.reviewsAnalyzed ?? audit.usableReviewCount;
   const isPartialCoverage = audit.windowCoverageStatus === "partial";
+  const collectionCount = displayedFetched.toLocaleString();
+  const collectionDate = formatDate(audit.oldestReviewFetchedAt);
+  const collectionSecondary = audit.status !== "complete" && audit.currentStage === "collecting"
+    ? `${collectionCount} reviews fetched${collectionDate ? ` · reaching back to ${collectionDate}` : ""}`
+    : audit.collectionStopReason === "window_reached" || audit.windowCoverageStatus === "complete"
+      ? `${collectionCount} reviews fetched · 30-day window covered`
+      : audit.collectionStopReason === "source_exhausted"
+        ? `${collectionCount} reviews fetched · all available reviews collected`
+        : audit.collectionStopReason === "max_reviews_reached"
+          ? `${collectionCount} reviews fetched · collection limit reached`
+          : `${collectionCount} reviews fetched · collection coverage is partial`;
+  const stageSecondary: Record<(typeof stages)[number][0], string | null> = {
+    validating: "Checking the Play Store source and audit window",
+    collecting: audit.reviewsFetched || audit.status === "complete" ? collectionSecondary : "Waiting for the first stored review batch",
+    normalizing: audit.reviewsUnique !== undefined ? `${formatCount(audit.reviewsFetched)} reviews → ${displayedUnique.toLocaleString()} unique` : null,
+    filtering: audit.reviewsEligible !== undefined ? `${formatCount(audit.reviewsUnique)} unique → ${displayedEligible.toLocaleString()} eligible for analysis` : null,
+    researching: audit.reviewsEligible !== undefined ? displayedAnalyzed > 0 && displayedAnalyzed < audit.reviewsEligible ? `Analyzing ${displayedAnalyzed.toLocaleString()} / ${formatCount(audit.reviewsEligible)} reviews` : `Analyzing ${formatCount(audit.reviewsEligible)} reviews` : null,
+    consolidating: audit.problemCandidatesCount !== undefined ? `${displayedCandidates.toLocaleString()} problem candidates found` : null,
+    diagnosing: audit.problemsCount !== undefined ? `${formatCount(audit.problemsCount)} problems being classified` : null,
+    ranking: audit.opportunitiesCount !== undefined ? `${formatCount(audit.opportunitiesCount)} evidence-backed opportunities` : null,
+    preparing: "Assembling findings, evidence and recommendations",
+  };
 
   return (
     <main className="audit-shell">
@@ -74,8 +147,8 @@ export function AuditProgress({ auditId }: { auditId: string }) {
         <p className="audit-source">{audit.sourceUrl}</p>{audit.status === "complete" ? <Link className="new-audit-link" href="/">Run another audit</Link> : null}
         <ol className="stage-list" aria-label="Audit progress">
           {stages.map(([key, label], index) => {
-            const state = audit.status === "complete" || index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
-            return <li className={`stage stage-${state}`} key={key}><span className="stage-marker" />{label}<span className="stage-state">{state === "active" ? "now" : state}</span></li>;
+            const state = audit.status === "complete" ? "done" : index < currentIndex ? "done" : index === currentIndex ? "active" : "waiting";
+            return <li className={`stage stage-${state}`} key={key} aria-current={state === "active" ? "step" : undefined}><span className="stage-marker" aria-hidden="true" /><div className="stage-copy"><span>{label}</span>{stageSecondary[key] ? <small key={`${key}-${stageSecondary[key]}`} className="stage-secondary">{stageSecondary[key]}</small> : null}</div><span className="stage-state">{state === "active" ? "now" : state}</span></li>;
           })}
         </ol>
         {audit.scrapeStatus === "complete" || audit.scrapeStatus === "partial" ? <div className="review-summary"><strong>{audit.analysisWindowDays === 30 ? `Last 30 days · ${reviewsAnalyzed.toLocaleString()} reviews analyzed` : `${audit.reviewCount} reviews collected`}</strong><span>{audit.analysisWindowDays === 30 ? `${(audit.reviewsFetched ?? audit.reviewCount).toLocaleString()} fetched · ${(audit.reviewsInWindow ?? audit.reviewCount).toLocaleString()} in window · ${isPartialCoverage ? "Partial coverage" : "Complete coverage"}` : `${audit.usableReviewCount} usable`} · {audit.skippedReviewCount ?? 0} malformed · {audit.lowQualityReviewCount ?? 0} low quality</span>{isPartialCoverage ? <p>Collection stopped before the full 30-day window was covered.</p> : null}{audit.scrapeWarning ? <p>{audit.scrapeWarning}</p> : null}{audit.analysisWindowDays === 30 && audit.reviewsInWindow === 0 ? <p>No reviews found in the last 30 days. Try again later or analyze a different app.</p> : audit.reviewCount === 0 ? <p>No reviews were found for this app. No recurring problems can be identified.</p> : audit.usableReviewCount === 0 ? <p>No usable reviews were found. No recurring problems can be identified.</p> : null}</div> : <p className="audit-note">The scraper is contacting Google Play. No review data is shown until it is actually retrieved.</p>}

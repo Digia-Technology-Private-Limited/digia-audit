@@ -112,10 +112,15 @@ button, input { font: inherit; }
 .audit-status { padding: 8px 11px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-family: "DM Mono", monospace; font-size: 10px; text-transform: uppercase; }
 .audit-source { overflow: hidden; margin: 24px 0 42px; color: var(--muted); font-family: "DM Mono", monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .stage-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
-.stage { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 12px; min-height: 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.stage { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 12px; min-height: 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; transition: color 240ms ease, background-color 240ms ease; }
 .stage-marker { width: 10px; height: 10px; border: 2px solid var(--line); border-radius: 50%; }
+.stage-copy { display: grid; gap: 4px; min-width: 0; }
+.stage-secondary { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.4; animation: stage-secondary-in 300ms ease both; }
 .stage-state { font-family: "DM Mono", monospace; font-size: 10px; text-transform: uppercase; }
-.stage-active { color: var(--ink); font-weight: 700; }.stage-active .stage-marker { border-color: var(--ink); background: var(--lime); }.stage-done { color: var(--ink); }.stage-done .stage-marker { border-color: var(--lime-deep); background: var(--lime-deep); }
+.stage-active { color: var(--ink); font-weight: 700; }.stage-active .stage-marker { border-color: var(--ink); background: var(--lime); animation: active-pulse 1.8s ease-in-out infinite; }.stage-done { color: var(--ink); }.stage-done .stage-marker { border-color: var(--lime-deep); background: var(--lime-deep); animation: stage-complete 320ms ease both; }
+@keyframes active-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(167,217,78,0); transform: scale(1); } 50% { box-shadow: 0 0 0 5px rgba(167,217,78,.18); transform: scale(1.08); } }
+@keyframes stage-complete { 0% { transform: scale(.75); opacity: .55; } 65% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes stage-secondary-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 .audit-note { margin: 32px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }.audit-loading { color: var(--muted); }.audit-message { width: min(100%, 700px); margin: 14vh auto 0; }.audit-message p:last-child { color: var(--muted); font-size: 16px; }
 .retry-button { margin-top: 24px; padding: 14px 18px; border: 0; border-radius: 12px; background: var(--lime); color: var(--ink); font-weight: 800; cursor: pointer; }.review-summary { display: grid; gap: 8px; margin-top: 28px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: rgba(198,243,107,.18); }.review-summary span, .review-summary p { color: var(--muted); font-size: 13px; }.review-summary p { margin: 0; }.review-list { margin-top: 38px; }.review-list h2 { margin: 0 0 14px; font-size: 20px; letter-spacing: -.03em; }.review-card { padding: 16px 0; border-top: 1px solid var(--line); }.review-card > div { display: flex; gap: 12px; color: var(--muted); font: 11px "DM Mono", monospace; }.review-card p { margin: 10px 0; line-height: 1.5; }.review-card small { color: var(--muted); font: 10px "DM Mono", monospace; word-break: break-all; }
 .candidate-list { margin-top: 42px; }.candidate-list h2 { margin: 0 0 14px; font-size: 20px; letter-spacing: -.03em; }.candidate-card { padding: 18px 0; border-top: 1px solid var(--line); }.candidate-card > div { display: flex; justify-content: space-between; gap: 18px; }.candidate-card strong { font-size: 16px; line-height: 1.4; }.candidate-card span, .candidate-card p { color: var(--muted); font-size: 12px; }.candidate-card p { margin: 9px 0 0; }
@@ -126,3 +131,5 @@ button, input { font: inherit; }
 @media (max-width: 700px) { .detail-grid { grid-template-columns: repeat(2, 1fr); }.detail-grid div:last-child { grid-column: span 2; } }
 
 @media (max-width: 560px) { .audit-shell { padding: 18px; }.audit-panel { padding: 30px 22px; border-radius: 22px; }.audit-heading { margin-top: 34px; }.audit-heading h1 { font-size: 42px; }.stage { font-size: 13px; }.stage-state { font-size: 9px; } }
+
+@media (prefers-reduced-motion: reduce) { .stage-active .stage-marker, .stage-done .stage-marker, .stage-secondary { animation: none; } }
